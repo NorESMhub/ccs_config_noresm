@@ -19,7 +19,7 @@
     <executable></executable>
   </mpirun>
   <mpirun mpilib="default">
-    <executable>srun</executable>
+    <executable>srun --kill-on-bad-exit --label</executable>
   </mpirun>
   <module_system type="module" allow_error="true">
     <init_path lang="perl">$ENV{LMOD_PKG}/init/perl</init_path>
@@ -33,8 +33,8 @@
     <modules compiler="intel-oneapi" mpilib='openmpi'>
       <command name="--force purge"></command>
       <command name="load">StdEnv</command>
-      <command name="use">/cluster/projects/nn9560k/mdeb/updt_mods/modules/all</command>
-      <command name="load">ESMF/8.6.1-iomkl-2022a-ParallelIO-2.6.3</command>
+      <command name="use">/cluster/shared/noresm/eb_mods/modules/all</command>
+      <command name="load">ESMF/8.4.2-iomkl-2022a-ParallelIO-2.5.10</command>
       <command name="load">Python/3.11.3-GCCcore-12.3.0</command>
       <command name="load">CMake/3.26.3-GCCcore-12.3.0</command>
       <command name="load">ParMETIS/4.0.3-iompi-2022a</command>
