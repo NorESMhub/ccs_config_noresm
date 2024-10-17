@@ -8,7 +8,7 @@
   <DIN_LOC_ROOT_CLMFORC>/cluster/shared/noresm/inputdata/atm/datm7</DIN_LOC_ROOT_CLMFORC>
   <DOUT_S_ROOT>/cluster/work/users/$USER/archive/$CASE</DOUT_S_ROOT>
   <BASELINE_ROOT> /cluster/shared/noresm/noresm_baselines</BASELINE_ROOT>
-  <CCSM_CPRNC>/cluster/shared/noresm/tools/cprnc/cprnc</CCSM_CPRNC>
+  <CCSM_CPRNC>/cluster/shared/noresm/tools/cprnc-iompi-2022a/bin/cprnc</CCSM_CPRNC>
   <GMAKE_J>8</GMAKE_J>
   <BATCH_SYSTEM>slurm</BATCH_SYSTEM>
   <SUPPORTED_BY>noresmCommunity</SUPPORTED_BY>
