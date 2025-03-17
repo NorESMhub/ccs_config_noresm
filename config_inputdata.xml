@@ -23,8 +23,6 @@
     <address>https://redoak.cs.toronto.edu/twitcher/ows/proxy/thredds/fileServer/datasets/CESM/inputdata/</address>
   </server>
 
-
-
   <server>
     <comment> wget access to subversion </comment>
     <protocol>wget</protocol>
