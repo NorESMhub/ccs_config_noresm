@@ -24,17 +24,6 @@ ntasks=16
 # Set script name
 sn=aggregate
 
-# concatenate history files into one file per year?
-# 0 = off, 1 = on.  Only years that are certainly complete are aggregated: a
-# year is left alone until files from a later year have appeared, so the year
-# currently being written is never touched.  Input files are removed only after
-# the record count of the aggregate has been verified against them.
-AGGREGATE=0
-
-# which streams to aggregate, as <component>.<stream> names.  Each must use an
-# unlimited time dimension (all CICE and MOSART history files do).
-AGGREGATE_STREAMS="cice.h1 mosart.h0a"
-
 # archieve data
 caseroot=`./xmlquery --value CASEROOT`
 archivedata=`./xmlquery --value DOUT_S_ROOT`
@@ -51,16 +40,22 @@ cd $archivedata
 
 lid="`date +%y%m%d-%H%M%S`"
 
-# concatenate history files into one file per year?
-# 0 = off, 1 = on.  Only years that are certainly complete are aggregated: a
-# year is left alone until files from a later year have appeared, so the year
-# currently being written is never touched.  Input files are removed only after
-# the record count of the aggregate has been verified against them.
+# Concatenate history files into one file per year?  Both settings come from
+# the case, so they are changed with xmlchange rather than by editing this
+# script, and they survive ./case.setup --reset:
+#
+#   ./xmlchange DOUT_S_AGGREGATE=TRUE
+#   ./xmlchange DOUT_S_AGGREGATE_STREAMS="cice.h1 mosart.h0a"
+#
+# Only years that are certainly complete are aggregated: a year is left alone
+# until files from a later year have appeared, so the year currently being
+# written is never touched.  Input files are removed only after the record
+# count of the aggregate has been verified against them.
 AGGREGATE=0
-
-# which streams to aggregate, as <component>.<stream> names.  Each must use an
-# unlimited time dimension (all CICE and MOSART history files do).
-AGGREGATE_STREAMS="cice.h1 mosart.h0a"
+if [ "`$caseroot/xmlquery --value DOUT_S_AGGREGATE`" == "TRUE" ]; then
+  AGGREGATE=1
+fi
+AGGREGATE_STREAMS=`$caseroot/xmlquery --value DOUT_S_AGGREGATE_STREAMS`
 
 # Functions
 
