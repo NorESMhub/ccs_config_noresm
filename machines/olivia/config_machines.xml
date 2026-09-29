@@ -53,6 +53,7 @@
       <command name="load">Python/3.11.5-GCCcore-13.2.0</command>
       <command name="load">CMake/3.27.6-GCCcore-13.2.0</command>
       <command name="load">XML-LibXML/2.0210-GCCcore-13.2.0</command>
+      <command name="load">NCO/5.2.9-foss-2023b</command>
 
     </modules>
   </module_system>
