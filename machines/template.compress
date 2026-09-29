@@ -24,25 +24,37 @@ ntasks=16
 # Set script name
 sn=compress
 
-# zip restart files?
-ZIPRES=0
-
-# remove log files?
-RMLOGS=0
-
-# archieve data
+# archive data
 caseroot=`./xmlquery --value CASEROOT`
 archivedata=`./xmlquery --value DOUT_S_ROOT`
 casename=`./xmlquery --value CASE`
 
+# A missing archive directory is a real failure here, so exit 1.  This is the
+# last job in the workflow and nothing is queued behind it, so a non-zero exit
+# stops nothing else.  template.aggregate deliberately exits 0 in the same
+# situation, because this job depends on it and would never start if it failed.
 if [ ! -d $archivedata ]; then
   echo "${sn}: ${archivedata} is not a directory." >&2
   exit 1
 fi
 cd $archivedata
 
+# zip restart files?
+ZIPRES=0
+
+# remove log files?
+RMLOGS=0
+
+# Deflation level passed to ncks -L when rewriting each history file as
+# netCDF-4.  1 is fastest and compresses least, 9 is slowest and compresses
+# most.  For floating point model output the gain above about 4 is small while
+# the cost keeps rising, so 5 is a deliberate middle choice rather than a
+# default.  Raising it makes this job noticeably longer for a few percent of
+# space.
 complevel=5 # 1-9
+
 lid="`date +%y%m%d-%H%M%S`"
+
 # Functions
 
 convert_cmd () {
@@ -78,15 +90,7 @@ convert_loop () {
       done
     fi
   done
-#  for ncfile in `find . -wholename '*/rest/*.nc' -print`; do
-#      while :; do
-#        if [ `jobs -p|wc -l` -lt $ntasks ]; then
-#          compress_cmd &
-#          break
-#        fi
-#        sleep 0.1s
-#      done
-#  done
+
   for logfile in `find . -wholename '*/logs/*' -print`; do
       if [ $RMLOGS -eq 1 ] ; then
         rm -f $logfile
