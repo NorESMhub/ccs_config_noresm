@@ -30,17 +30,6 @@ ZIPRES=0
 # remove log files?
 RMLOGS=0
 
-# concatenate history files into one file per year?
-# 0 = off, 1 = on.  Only years that are certainly complete are aggregated: a
-# year is left alone until files from a later year have appeared, so the year
-# currently being written is never touched.  Input files are removed only after
-# the record count of the aggregate has been verified against them.
-AGGREGATE=0
-
-# which streams to aggregate, as <component>.<stream> names.  Each must use an
-# unlimited time dimension (all CICE and MOSART history files do).
-AGGREGATE_STREAMS="cice.h1 mosart.h0a"
-
 # archieve data
 caseroot=`./xmlquery --value CASEROOT`
 archivedata=`./xmlquery --value DOUT_S_ROOT`
@@ -72,75 +61,6 @@ compress_cmd () {
     gzip $ncfile
     chmod go+r ${ncfile}.gz
   fi
-}
-
-
-aggregate_cmd () {
-  # $1 = hist directory, $2 = filename prefix through the stream, $3 = year
-  local dir=$1 prefix=$2 year=$3
-  local inputs nin out nout
-
-  inputs=`ls ${dir}/${prefix}.${year}-*.nc 2>/dev/null`
-  [ -z "$inputs" ] && return 0
-  nin=`echo "$inputs" | wc -l | tr -d ' '`
-
-  out=${dir}/${prefix}.${year}.nc
-  if [ -f "$out" ]; then
-    echo "aggregate: $out exists, skipping"
-    return 0
-  fi
-
-  echo "aggregate: $out <- $nin files"
-  # -h keeps the command line (and every input name) out of the history attribute
-  ncrcat -O -h $inputs ${out}_tmp
-
-  nout=`ncdump -h ${out}_tmp | sed -n 's/.*time = UNLIMITED ; \/\/ (\([0-9]*\) currently).*/\1/p'`
-  if [ "$nout" != "$nin" ]; then
-    echo "aggregate: ERROR $out has $nout records, expected $nin - inputs kept" >&2
-    rm -f ${out}_tmp
-    return 1
-  fi
-
-  mv ${out}_tmp $out
-  chmod go+r $out
-  rm -f $inputs
-  echo "aggregate: removed $nin input files"
-}
-
-
-aggregate_loop () {
-  [ $AGGREGATE -eq 1 ] || return 0
-
-  # ncrcat does the concatenation and ncdump verifies the result before any
-  # input is deleted, so both must be present.  Loading NCO is handled above
-  # and is machine specific; if it did not happen, skip aggregation rather
-  # than abort, so that compression and the rsync still run.
-  for tool in ncrcat ncdump; do
-    if ! command -v $tool >/dev/null 2>&1; then
-      echo "aggregate: ERROR $tool not found, skipping aggregation (is NCO loaded?)" >&2
-      echo "aggregate: ERROR $tool not found, skipping aggregation (is NCO loaded?)"
-      return 0
-    fi
-  done
-  for histdir in `find . -type d -wholename "*/hist" -print`; do
-    for stream in $AGGREGATE_STREAMS; do
-      prefix=${casename}.${stream}
-      years=`ls ${histdir}/${prefix}.*-*.nc 2>/dev/null |
-               sed -n "s|.*/${prefix}\.\([0-9][0-9][0-9][0-9]\)-.*|\1|p" | sort -u`
-      [ -z "$years" ] && continue
-      # the highest year present may still be accumulating, so leave it
-      latest=`echo "$years" | tail -1`
-      for year in $years; do
-        if [ "$year" = "$latest" ]; then
-          echo "aggregate: ${prefix}.${year} may still be active, skipping"
-          continue
-        fi
-        # a failure here must not abort the rest of the archiving
-        aggregate_cmd "$histdir" "$prefix" "$year" || true
-      done
-    done
-  done
-  echo "${sn}: aggregation completed."
 }
 
 
@@ -179,7 +99,6 @@ convert_loop () {
 
 # Execute the convert loop as a backgroud process
 echo `date` > $archivedata/archive.log.$lid
-aggregate_loop >> $archivedata/archive.log.$lid
 convert_loop >> $archivedata/archive.log.$lid
 echo `date` >> $archivedata/archive.log.$lid
 rsync -avh $caseroot $archivedata >> $archivedata/case.log.$lid

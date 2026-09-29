@@ -1,0 +1,169 @@
+#!/bin/bash -e
+
+# Batch system directives
+{{ batchdirectives }}
+
+
+machine=`./xmlquery --value MACH`
+echo $machine
+if [[ "$machine" == "olivia" ]]; then
+module purge
+module load NRIS/CPU
+module load Python/3.12.3-GCCcore-13.3.0
+module load NCO/5.2.9-intel-2024a-NorESM
+elif [[ "$machine" == "betzy" ]]; then
+module purge
+module load NCO/5.1.9-iomkl-2022a
+else
+echo "no proper NCO"    
+exit
+fi
+
+ntasks=16
+
+# Set script name
+sn=aggregate
+
+# concatenate history files into one file per year?
+# 0 = off, 1 = on.  Only years that are certainly complete are aggregated: a
+# year is left alone until files from a later year have appeared, so the year
+# currently being written is never touched.  Input files are removed only after
+# the record count of the aggregate has been verified against them.
+AGGREGATE=0
+
+# which streams to aggregate, as <component>.<stream> names.  Each must use an
+# unlimited time dimension (all CICE and MOSART history files do).
+AGGREGATE_STREAMS="cice.h1 mosart.h0a"
+
+# archieve data
+caseroot=`./xmlquery --value CASEROOT`
+archivedata=`./xmlquery --value DOUT_S_ROOT`
+casename=`./xmlquery --value CASE`
+
+# Nothing to aggregate is not an error.  case.compress depends on this job
+# with afterok, so a non-zero exit here would stop compression from running
+# at all; this job must only fail for reasons that genuinely warrant that.
+if [ ! -d $archivedata ]; then
+  echo "${sn}: ${archivedata} is not a directory, nothing to aggregate."
+  exit 0
+fi
+cd $archivedata
+
+lid="`date +%y%m%d-%H%M%S`"
+
+# concatenate history files into one file per year?
+# 0 = off, 1 = on.  Only years that are certainly complete are aggregated: a
+# year is left alone until files from a later year have appeared, so the year
+# currently being written is never touched.  Input files are removed only after
+# the record count of the aggregate has been verified against them.
+AGGREGATE=0
+
+# which streams to aggregate, as <component>.<stream> names.  Each must use an
+# unlimited time dimension (all CICE and MOSART history files do).
+AGGREGATE_STREAMS="cice.h1 mosart.h0a"
+
+# Functions
+
+aggregate_cmd () {
+  # $1 = hist directory, $2 = filename prefix through the stream, $3 = year
+  local dir=$1 prefix=$2 year=$3
+  local inputs nin out nout
+
+  inputs=`find ${dir} -maxdepth 1 -name "${prefix}.${year}-*.nc" -print 2>/dev/null | sort`
+  [ -z "$inputs" ] && return 0
+  nin=`echo "$inputs" | wc -l | tr -d ' '`
+
+  out=${dir}/${prefix}.${year}.nc
+  if [ -f "$out" ]; then
+    echo "aggregate: $out exists, skipping"
+    return 0
+  fi
+
+  echo "aggregate: $out <- $nin files"
+  # -h keeps the command line (and every input name) out of the history attribute
+  ncrcat -O -h $inputs ${out}_tmp
+
+  nout=`ncdump -h ${out}_tmp | sed -n 's/.*time = UNLIMITED ; \/\/ (\([0-9]*\) currently).*/\1/p'`
+  if [ "$nout" != "$nin" ]; then
+    echo "aggregate: ERROR $out has $nout records, expected $nin - inputs kept" >&2
+    rm -f ${out}_tmp
+    return 1
+  fi
+
+  mv ${out}_tmp $out
+  chmod go+r $out
+  rm -f $inputs
+  echo "aggregate: removed $nin input files"
+}
+
+
+aggregate_loop () {
+  [ $AGGREGATE -eq 1 ] || return 0
+
+  # ncrcat does the concatenation and ncdump verifies the result before any
+  # input is deleted, so both must be present.  Loading NCO is handled above
+  # and is machine specific; if it did not happen, skip aggregation rather
+  # than abort, so that compression and the rsync still run.
+  for tool in ncrcat ncdump; do
+    if ! command -v $tool >/dev/null 2>&1; then
+      echo "aggregate: ERROR $tool not found, skipping aggregation (is NCO loaded?)" >&2
+      echo "aggregate: ERROR $tool not found, skipping aggregation (is NCO loaded?)"
+      return 0
+    fi
+  done
+  for histdir in `find . -type d -wholename "*/hist" -print`; do
+    for stream in $AGGREGATE_STREAMS; do
+      prefix=${casename}.${stream}
+      # Collect the years for which per-date history files exist, e.g. 1526
+      # from <case>.cice.h1.1526-01-01.nc.  The trailing hyphen in the pattern
+      # is what distinguishes those from an already aggregated year such as
+      # <case>.cice.h1.1526.nc, so an aggregate is never used as input.
+      # use 'find' rather than a shell 'glob': a glob would expand every per-date file
+      # of every year onto one command line, which can exceed ARG_MAX on a
+      # large archive (a decade of daily output is thousands of names).
+      years=`find ${histdir} -maxdepth 1 -name "${prefix}.*-*.nc" -print 2>/dev/null |
+               sed -n "s|.*/${prefix}\.\([0-9][0-9][0-9][0-9]\)-.*|\1|p" | sort -u`
+      [ -z "$years" ] && continue
+      # the highest year present may still be accumulating, so leave it
+      latest=`echo "$years" | tail -1`
+      for year in $years; do
+        if [ "$year" = "$latest" ]; then
+          echo "aggregate: ${prefix}.${year} may still be active, skipping"
+          continue
+        fi
+        # Run up to $ntasks concatenations at once, the same way convert_loop
+        # throttles convert_cmd.  The trailing & is what gives the parallelism:
+        # it backgrounds the call so the loop moves straight on to the next
+        # year instead of waiting for this ncrcat to finish.  `jobs -p` lists
+        # this shell's background jobs, so the count is the concurrency; while
+        # it is at the limit, sleep and look again.  The || true keeps one
+        # failed year from aborting the rest of the archiving.
+        while :; do
+          if [ `jobs -p|wc -l` -lt $ntasks ]; then
+            aggregate_cmd "$histdir" "$prefix" "$year" || true &
+            break
+          fi
+          sleep 0.1s
+        done
+      done
+    done
+  done
+  # block until every backgrounded concatenation has finished, so that the
+  # message below is true and the compression pass that follows never sees a
+  # half written file
+  wait
+  echo "${sn}: aggregation completed."
+}
+
+# Execute the aggregation as a background process
+echo `date` > $archivedata/aggregate.log.$lid
+aggregate_loop >> $archivedata/aggregate.log.$lid
+echo `date` >> $archivedata/aggregate.log.$lid
+
+unset SLURM_MEM_PER_NODE
+unset SLURM_MEM_PER_CPU
+
+# Exit successfully even if something above was unhappy: case.compress depends
+# on this job with afterok and must not be blocked by an aggregation problem.
+# Failures are reported in aggregate.log and leave their input files intact.
+exit 0
