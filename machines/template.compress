@@ -85,7 +85,7 @@ convert_loop () {
           convert_cmd &
           break
         fi
-        sleep 0.1s
+        sleep 1s
       done
     fi
   done

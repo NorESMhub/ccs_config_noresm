@@ -47,14 +47,17 @@ lid="$(date +%y%m%d-%H%M%S)"
 # script, and they survive ./case.setup --reset:
 #
 #   ./xmlchange DOUT_S_AGGREGATE=TRUE
-#   ./xmlchange DOUT_S_AGGREGATE_STREAMS="cice.h1 mosart.h0a"
+#   ./xmlchange DOUT_S_AGGREGATE_STREAMS="cice.h1:365 mosart.h0a:12"
 #
-# Only years that are certainly complete are aggregated: a year is left alone
-# until files from a later year have appeared, so the year currently being
-# written is never touched.  Input files are removed only after the record
-# count of the aggregate has been verified against them.
+# The stream :count specification (e.g. cice.h1:365) specifies that a
+# complete year must have 365 time samples The count is required: it
+# is what distinguishes a finished year from one still being written,
+# and without it a partial year would be concatenated.  Only years
+# that are certainly complete are aggregated.  Input files are removed
+# only after the record count of the aggregate has been verified against them.
+
 AGGREGATE=0
-if [ "$($caseroot/xmlquery --value DOUT_S_AGGREGATE)" == "TRUE" ]; then
+if [[ "$($caseroot/xmlquery --value DOUT_S_AGGREGATE)" == "TRUE" ]]; then
   AGGREGATE=1
 fi
 AGGREGATE_STREAMS=$($caseroot/xmlquery --value DOUT_S_AGGREGATE_STREAMS)
@@ -82,7 +85,9 @@ aggregate_cmd () {
   local inputs nin out nout
 
   inputs=$(find ${dir} -maxdepth 1 -name "${prefix}.${year}-*.nc" 2>/dev/null | sort)
-  [ -z "$inputs" ] && return 0
+  if [ -z "$inputs" ]; then
+    return 0
+  fi
   nin=$(echo "$inputs" | wc -l | tr -d ' ')
 
   out=${dir}/${prefix}.${year}.nc
@@ -99,6 +104,9 @@ aggregate_cmd () {
   if [ "$nout" != "$nin" ]; then
     echo "aggregate: ERROR $out has $nout records, expected $nin - inputs kept" >&2
     rm -f ${out}_tmp
+    # Record the failure by name.  This runs in a background subshell, so a
+    # shell variable could not be seen by aggregate_loop; a file can.
+    echo "${prefix}.${year} ($nout records, expected $nin)" >> $AGGREGATE_FAILURES
     return 1
   fi
 
@@ -112,6 +120,11 @@ aggregate_cmd () {
 aggregate_loop () {
   [ $AGGREGATE -eq 1 ] || return 0
 
+  # Each year is concatenated in a background subshell, so failures cannot be
+  # counted in a shell variable.  Each one appends a line here instead, and the
+  # summary at the end of this function reports them.
+  AGGREGATE_FAILURES=$(mktemp ${TMPDIR:-/tmp}/aggregate_failures.XXXXXX)
+
   # ncrcat does the concatenation and ncdump verifies the result before any
   # input is deleted, so both must be present.  Loading NCO is handled above
   # and is machine specific; if it did not happen, skip aggregation rather
@@ -120,12 +133,36 @@ aggregate_loop () {
     if ! command -v $tool >/dev/null 2>&1; then
       echo "aggregate: ERROR $tool not found, skipping aggregation (is NCO loaded?)" >&2
       echo "aggregate: ERROR $tool not found, skipping aggregation (is NCO loaded?)"
+      rm -f $AGGREGATE_FAILURES
       return 0
     fi
   done
-  for histdir in $(find . -type d -wholename "*/hist" -print); do
+  for histdir in $(find . -type d -wholename "*/hist"); do
     for stream in $AGGREGATE_STREAMS; do
-      prefix=${casename}.${stream}
+      # Each entry must be <component>.<stream>:<count>, where count is how
+      # many files a complete year of that stream contains, e.g. cice.h1:365
+      # for daily output and mosart.h0a:12 for monthly.  The count is required:
+      # it is what distinguishes a finished year from one still being written,
+      # and without it a partial year would be concatenated.
+      stream_name=${stream%%:*}
+      stream_count=${stream#*:}
+
+      # Stripping up to the colon returns the string unchanged when there is no
+      # colon, so an unchanged value means the count is missing altogether.
+      no_colon_present=false
+      [[ "$stream_count" == "$stream" ]] && no_colon_present=true
+
+      # A count must be a plain positive integer.  Rejecting 0 matters: it
+      # would make every year look complete, including one with no files.
+      count_is_positive_integer=true
+      echo "$stream_count" | grep -qE '^[1-9][0-9]*$' || count_is_positive_integer=false
+
+      if $no_colon_present || ! $count_is_positive_integer; then
+        echo "aggregate: ERROR '${stream}' is not of the form <component>.<stream>:<count>, skipping" >&2
+        echo "${stream} (malformed DOUT_S_AGGREGATE_STREAMS entry)" >> $AGGREGATE_FAILURES
+        continue
+      fi
+
       # Collect the years for which per-date history files exist, e.g. 1526
       # from <case>.cice.h1.1526-01-01.nc.  The trailing hyphen in the pattern
       # is what distinguishes those from an already aggregated year such as
@@ -133,16 +170,22 @@ aggregate_loop () {
       # use 'find' rather than a shell 'glob': a glob would expand every per-date file
       # of every year onto one command line, which can exceed ARG_MAX on a
       # large archive (a decade of daily output is thousands of names).
-      years=$(find ${histdir} -maxdepth 1 -name "${prefix}.*-*.nc" -print 2>/dev/null |
+      prefix=${casename}.${stream_name}
+      years=$(find ${histdir} -maxdepth 1 -name "${prefix}.*-*.nc" 2>/dev/null |
                sed -n "s|.*/${prefix}\.\([0-9][0-9][0-9][0-9]\)-.*|\1|p" | sort -u)
       [ -z "$years" ] && continue
-      # the highest year present may still be accumulating, so leave it
-      latest=$(echo "$years" | tail -1)
+
+      # Loop over years
       for year in $years; do
-        if [ "$year" = "$latest" ]; then
-          echo "aggregate: ${prefix}.${year} may still be active, skipping"
+        # A year is aggregated only once all of its files are on disk, so a
+        # year still being written is skipped on the evidence rather than on
+        # any assumption about which year happens to be last.
+        nfiles=$(find ${histdir} -maxdepth 1 -name "${prefix}.${year}-*.nc" 2>/dev/null | wc -l | tr -d ' ')
+        if [ "$nfiles" -lt "$stream_count" ]; then
+          echo "aggregate: ${prefix}.${year} has ${nfiles} of ${stream_count} files, leaving it alone"
           continue
         fi
+
         # Run up to $ntasks concatenations at once, the same way convert_loop
         # throttles convert_cmd.  The trailing & is what gives the parallelism:
         # it backgrounds the call so the loop moves straight on to the next
@@ -155,16 +198,30 @@ aggregate_loop () {
             aggregate_cmd "$histdir" "$prefix" "$year" || true &
             break
           fi
-          sleep 0.1s
+          sleep 1s
         done
-      done
-    done
-  done
+
+      done # end of year loop
+    done # end of stream loop
+  done # end of histdir loop
   # block until every backgrounded concatenation has finished, so that the
   # message below is true and the compression pass that follows never sees a
   # half written file
   wait
-  echo "${sn}: aggregation completed."
+
+  # Report what failed.  The job still exits 0 (see the note at the top of this
+  # script), so this summary is the only signal that something went wrong -
+  # make it explicit rather than silently claiming success.
+  nfail=$(wc -l < $AGGREGATE_FAILURES | tr -d ' ')
+  if [ "$nfail" -gt 0 ]; then
+    echo "${sn}: WARNING ${nfail} aggregation(s) FAILED; all of their input files were kept:" >&2
+    sed 's/^/  /' $AGGREGATE_FAILURES >&2
+    echo "${sn}: WARNING ${nfail} aggregation(s) FAILED; all of their input files were kept:"
+    sed 's/^/  /' $AGGREGATE_FAILURES
+  else
+    echo "${sn}: aggregation completed, no failures."
+  fi
+  rm -f $AGGREGATE_FAILURES
 }
 
 # Execute the aggregation as a background process
