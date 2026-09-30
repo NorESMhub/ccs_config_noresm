@@ -4,8 +4,7 @@
 {{ batchdirectives }}
 
 
-machine=`./xmlquery --value MACH`
-echo $machine
+machine=$(./xmlquery --value MACH)
 if [[ "$machine" == "olivia" ]]; then
 module purge
 module load NRIS/CPU
@@ -25,9 +24,9 @@ ntasks=16
 sn=aggregate
 
 # archive data
-caseroot=`./xmlquery --value CASEROOT`
-archivedata=`./xmlquery --value DOUT_S_ROOT`
-casename=`./xmlquery --value CASE`
+caseroot=$(./xmlquery --value CASEROOT)
+archivedata=$(./xmlquery --value DOUT_S_ROOT)
+casename=$(./xmlquery --value CASE)
 
 # Having nothing to aggregate is not an error, so exit 0 rather than 1.
 # config_workflow.xml makes case.compress depend on this job, and every batch
@@ -41,7 +40,7 @@ if [ ! -d $archivedata ]; then
 fi
 cd $archivedata
 
-lid="`date +%y%m%d-%H%M%S`"
+lid="$(date +%y%m%d-%H%M%S)"
 
 # Concatenate history files into one file per year?  Both settings come from
 # the case, so they are changed with xmlchange rather than by editing this
@@ -55,21 +54,36 @@ lid="`date +%y%m%d-%H%M%S`"
 # written is never touched.  Input files are removed only after the record
 # count of the aggregate has been verified against them.
 AGGREGATE=0
-if [ "`$caseroot/xmlquery --value DOUT_S_AGGREGATE`" == "TRUE" ]; then
+if [ "$($caseroot/xmlquery --value DOUT_S_AGGREGATE)" == "TRUE" ]; then
   AGGREGATE=1
 fi
-AGGREGATE_STREAMS=`$caseroot/xmlquery --value DOUT_S_AGGREGATE_STREAMS`
+AGGREGATE_STREAMS=$($caseroot/xmlquery --value DOUT_S_AGGREGATE_STREAMS)
 
 # Functions
 
 aggregate_cmd () {
-  # $1 = hist directory, $2 = filename prefix through the stream, $3 = year
+  # Combine one year of one history stream into a single file.
+  #
+  # Concatenates <prefix>.<year>-*.nc into <prefix>.<year>.nc along the time
+  # dimension, then checks that the result holds one record per input file before
+  # deleting any of them.  If that check fails, the part built so far is discarded
+  # and every input is kept, so nothing can be lost to a partial or corrupt
+  # concatenation.
+  #
+  # Does nothing if the year has no files, or if its combined file already exists,
+  # which is what makes the job safe to run repeatedly over the same archive.
+  #
+  #   $1  directory holding the files, e.g. <archive>/ice/hist
+  #   $2  filename prefix through the stream, e.g. <case>.cice.h1
+  #   $3  four digit year
+  #
+  # Returns non-zero only when the record count did not verify.
   local dir=$1 prefix=$2 year=$3
   local inputs nin out nout
 
-  inputs=`find ${dir} -maxdepth 1 -name "${prefix}.${year}-*.nc" -print 2>/dev/null | sort`
+  inputs=$(find ${dir} -maxdepth 1 -name "${prefix}.${year}-*.nc" 2>/dev/null | sort)
   [ -z "$inputs" ] && return 0
-  nin=`echo "$inputs" | wc -l | tr -d ' '`
+  nin=$(echo "$inputs" | wc -l | tr -d ' ')
 
   out=${dir}/${prefix}.${year}.nc
   if [ -f "$out" ]; then
@@ -81,7 +95,7 @@ aggregate_cmd () {
   # -h keeps the command line (and every input name) out of the history attribute
   ncrcat -O -h $inputs ${out}_tmp
 
-  nout=`ncdump -h ${out}_tmp | sed -n 's/.*time = UNLIMITED ; \/\/ (\([0-9]*\) currently).*/\1/p'`
+  nout=$(ncdump -h ${out}_tmp | sed -n 's/.*time = UNLIMITED ; \/\/ (\([0-9]*\) currently).*/\1/p')
   if [ "$nout" != "$nin" ]; then
     echo "aggregate: ERROR $out has $nout records, expected $nin - inputs kept" >&2
     rm -f ${out}_tmp
@@ -109,7 +123,7 @@ aggregate_loop () {
       return 0
     fi
   done
-  for histdir in `find . -type d -wholename "*/hist" -print`; do
+  for histdir in $(find . -type d -wholename "*/hist" -print); do
     for stream in $AGGREGATE_STREAMS; do
       prefix=${casename}.${stream}
       # Collect the years for which per-date history files exist, e.g. 1526
@@ -119,11 +133,11 @@ aggregate_loop () {
       # use 'find' rather than a shell 'glob': a glob would expand every per-date file
       # of every year onto one command line, which can exceed ARG_MAX on a
       # large archive (a decade of daily output is thousands of names).
-      years=`find ${histdir} -maxdepth 1 -name "${prefix}.*-*.nc" -print 2>/dev/null |
-               sed -n "s|.*/${prefix}\.\([0-9][0-9][0-9][0-9]\)-.*|\1|p" | sort -u`
+      years=$(find ${histdir} -maxdepth 1 -name "${prefix}.*-*.nc" -print 2>/dev/null |
+               sed -n "s|.*/${prefix}\.\([0-9][0-9][0-9][0-9]\)-.*|\1|p" | sort -u)
       [ -z "$years" ] && continue
       # the highest year present may still be accumulating, so leave it
-      latest=`echo "$years" | tail -1`
+      latest=$(echo "$years" | tail -1)
       for year in $years; do
         if [ "$year" = "$latest" ]; then
           echo "aggregate: ${prefix}.${year} may still be active, skipping"
@@ -137,7 +151,7 @@ aggregate_loop () {
         # it is at the limit, sleep and look again.  The || true keeps one
         # failed year from aborting the rest of the archiving.
         while :; do
-          if [ `jobs -p|wc -l` -lt $ntasks ]; then
+          if [ $(jobs -p|wc -l) -lt $ntasks ]; then
             aggregate_cmd "$histdir" "$prefix" "$year" || true &
             break
           fi
@@ -154,9 +168,9 @@ aggregate_loop () {
 }
 
 # Execute the aggregation as a background process
-echo `date` > $archivedata/aggregate.log.$lid
+echo $(date) > $archivedata/aggregate.log.$lid
 aggregate_loop >> $archivedata/aggregate.log.$lid
-echo `date` >> $archivedata/aggregate.log.$lid
+echo $(date) >> $archivedata/aggregate.log.$lid
 
 unset SLURM_MEM_PER_NODE
 unset SLURM_MEM_PER_CPU

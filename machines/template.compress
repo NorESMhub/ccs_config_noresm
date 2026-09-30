@@ -4,8 +4,7 @@
 {{ batchdirectives }}
 
 
-machine=`./xmlquery --value MACH`
-echo $machine
+machine=$(./xmlquery --value MACH)
 if [[ "$machine" == "olivia" ]]; then
 module purge
 module load NRIS/CPU
@@ -25,9 +24,9 @@ ntasks=16
 sn=compress
 
 # archive data
-caseroot=`./xmlquery --value CASEROOT`
-archivedata=`./xmlquery --value DOUT_S_ROOT`
-casename=`./xmlquery --value CASE`
+caseroot=$(./xmlquery --value CASEROOT)
+archivedata=$(./xmlquery --value DOUT_S_ROOT)
+casename=$(./xmlquery --value CASE)
 
 # A missing archive directory is a real failure here, so exit 1.  This is the
 # last job in the workflow and nothing is queued behind it, so a non-zero exit
@@ -53,7 +52,7 @@ RMLOGS=0
 # space.
 complevel=5 # 1-9
 
-lid="`date +%y%m%d-%H%M%S`"
+lid="$(date +%y%m%d-%H%M%S)"
 
 # Functions
 
@@ -79,10 +78,10 @@ compress_cmd () {
 convert_loop () {
   set -e
   # loop over cases 
-  for ncfile in `find . -wholename "*/hist/${casename}*.nc" -print`; do
-    if [[ "`ncdump -k $ncfile`" != 'netCDF-4' && "`ncdump -k $ncfile`" != 'netCDF-4 classic model' ]] ; then
+  for ncfile in $(find . -wholename "*/hist/${casename}*.nc" -print); do
+    if [[ "$(ncdump -k $ncfile)" != 'netCDF-4' && "$(ncdump -k $ncfile)" != 'netCDF-4 classic model' ]] ; then
       while :; do
-        if [ `jobs -p|wc -l` -lt $ntasks ]; then
+        if [ $(jobs -p|wc -l) -lt $ntasks ]; then
           convert_cmd &
           break
         fi
@@ -91,7 +90,7 @@ convert_loop () {
     fi
   done
 
-  for logfile in `find . -wholename '*/logs/*' -print`; do
+  for logfile in $(find . -wholename '*/logs/*' -print); do
       if [ $RMLOGS -eq 1 ] ; then
         rm -f $logfile
       fi
@@ -102,11 +101,11 @@ convert_loop () {
 }
 
 # Execute the convert loop as a backgroud process
-echo `date` > $archivedata/archive.log.$lid
+echo $(date) > $archivedata/archive.log.$lid
 convert_loop >> $archivedata/archive.log.$lid
-echo `date` >> $archivedata/archive.log.$lid
+echo $(date) >> $archivedata/archive.log.$lid
 rsync -avh $caseroot $archivedata >> $archivedata/case.log.$lid
-echo `date` >> $archivedata/archive.log.$lid
+echo $(date) >> $archivedata/archive.log.$lid
 
 unset SLURM_MEM_PER_NODE
 unset SLURM_MEM_PER_CPU
