@@ -28,20 +28,6 @@ caseroot=$(./xmlquery --value CASEROOT)
 archivedata=$(./xmlquery --value DOUT_S_ROOT)
 casename=$(./xmlquery --value CASE)
 
-# Having nothing to aggregate is not an error, so exit 0 rather than 1.
-# config_workflow.xml makes case.compress depend on this job, and every batch
-# system expresses that dependency as "run only if the other job succeeded".
-# A non-zero exit here therefore leaves compression permanently unrun: the
-# dependency can never be satisfied and the queued job is eventually discarded.
-# Failure from this script should only occur where that outcome is genuinely wanted.
-if [ ! -d $archivedata ]; then
-  echo "${sn}: ${archivedata} is not a directory, nothing to aggregate."
-  exit 0
-fi
-cd $archivedata
-
-lid="$(date +%y%m%d-%H%M%S)"
-
 # Concatenate history files into one file per year?  Both settings come from
 # the case, so they are changed with xmlchange rather than by editing this
 # script, and they survive ./case.setup --reset:
@@ -55,12 +41,29 @@ lid="$(date +%y%m%d-%H%M%S)"
 # and without it a partial year would be concatenated.  Only years
 # that are certainly complete are aggregated.  Input files are removed
 # only after the record count of the aggregate has been verified against them.
-
+#
+# These are read here, while the working directory is still the case: xmlquery
+# identifies the case from the directory it is run in, not from its own path,
+# so it cannot be used once this script has cd'd to the archive.
 AGGREGATE=0
-if [[ "$($caseroot/xmlquery --value DOUT_S_AGGREGATE)" == "TRUE" ]]; then
+if [[ "$(./xmlquery --value DOUT_S_AGGREGATE)" == "TRUE" ]]; then
   AGGREGATE=1
 fi
-AGGREGATE_STREAMS=$($caseroot/xmlquery --value DOUT_S_AGGREGATE_STREAMS)
+AGGREGATE_STREAMS=$(./xmlquery --value DOUT_S_AGGREGATE_STREAMS)
+
+# Having nothing to aggregate is not an error, so exit 0 rather than 1.
+# config_workflow.xml makes case.compress depend on this job, and every batch
+# system expresses that dependency as "run only if the other job succeeded".
+# A non-zero exit here therefore leaves compression permanently unrun: the
+# dependency can never be satisfied and the queued job is eventually discarded.
+# Failure from this script should only occur where that outcome is genuinely wanted.
+if [ ! -d $archivedata ]; then
+  echo "${sn}: ${archivedata} is not a directory, nothing to aggregate."
+  exit 0
+fi
+cd $archivedata
+
+lid="$(date +%y%m%d-%H%M%S)"
 
 # Functions
 
@@ -98,7 +101,14 @@ aggregate_cmd () {
 
   echo "aggregate: $out <- $nin files"
   # -h keeps the command line (and every input name) out of the history attribute
-  ncrcat -O -h $inputs ${out}_tmp
+  if ! ncrcat -O -h $inputs ${out}_tmp; then
+    echo "aggregate: ERROR ncrcat failed for ${prefix}.${year} - inputs kept" >&2
+    # ncrcat writes through its own temp file and does not remove it when it
+    # dies, so clear that as well as our own partial output.
+    rm -f ${out}_tmp ${out}_tmp.pid*.ncrcat.tmp
+    echo "${prefix}.${year} (ncrcat failed)" >> $AGGREGATE_FAILURES
+    return 1
+  fi
 
   nout=$(ncdump -h ${out}_tmp | sed -n 's/.*time = UNLIMITED ; \/\/ (\([0-9]*\) currently).*/\1/p')
   if [ "$nout" != "$nin" ]; then
