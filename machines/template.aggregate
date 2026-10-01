@@ -85,7 +85,7 @@ aggregate_cmd () {
   #
   # Returns non-zero only when the record count did not verify.
   local dir=$1 prefix=$2 year=$3
-  local inputs nin out nout
+  local inputs nin out nout timestamp hist
 
   inputs=$(find ${dir} -maxdepth 1 -name "${prefix}.${year}-*.nc" 2>/dev/null | sort)
   if [ -z "$inputs" ]; then
@@ -103,7 +103,8 @@ aggregate_cmd () {
   fi
 
   echo "aggregate: $out <- $nin files"
-  # -h keeps the command line (and every input name) out of the history attribute
+  # -h suppresses ncrcat's own history entry, which names every input file
+  # (~21 KB on one line for a year of dailies).  A compact one is added below.
   if ! ncrcat -O -h $inputs ${out}_tmp; then
     echo "aggregate: ERROR ncrcat failed for ${prefix}.${year} - inputs kept" >&2
     # ncrcat writes through its own temp file and does not remove it when it
@@ -121,6 +122,24 @@ aggregate_cmd () {
     # shell variable could not be seen by aggregate_loop; a file can.
     echo "${prefix}.${year} ($nout records, expected $nin)" >> $AGGREGATE_FAILURES
     return 1
+  fi
+
+  # Record how the file was built by appending one line to its history
+  # attribute.  The five comma-separated fields of -a are
+  # name,variable,mode,type,value:
+  #
+  #   history  the attribute to edit
+  #   global   a file-level attribute, not one belonging to a variable
+  #   a        append, which keeps the model's own history rather than
+  #            replacing it (that history is inherited from the first input)
+  #   c        the value is of type char
+  #
+  # -h stops ncatted from adding its own command line after ours.
+  timestamp=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+  hist="\n${timestamp}: case.aggregate: "
+  hist+="ncrcat of ${nin} files matching ${prefix}.${year}-*.nc"
+  if ! ncatted -O -h -a history,global,a,c,"$hist" ${out}_tmp; then
+    echo "aggregate: WARNING could not add a history entry to $out" >&2
   fi
 
   mv ${out}_tmp $out
