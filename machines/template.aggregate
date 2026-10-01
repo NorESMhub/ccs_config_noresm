@@ -200,11 +200,13 @@ aggregate_loop () {
       # <case>.cice.h1.1526.nc, so an aggregate is never used as input.
       # use 'find' rather than a shell 'glob': a glob would expand every per-date file
       # of every year onto one command line, which can exceed ARG_MAX on a
-      # large archive (a decade of daily output is thousands of names).
+      # large archive (a decade of daily output is thousands of files).
       prefix=${casename}.${stream_name}
       years=$(find ${histdir} -maxdepth 1 -name "${prefix}.*-*.nc" 2>/dev/null |
                sed -n "s|.*/${prefix}\.\([0-9][0-9][0-9][0-9]\)-.*|\1|p" | sort -u)
-      [ -z "$years" ] && continue
+      if [ -z "$years" ]; then
+          continue
+      fi
 
       # Loop over years
       for year in $years; do
