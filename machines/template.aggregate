@@ -93,10 +93,13 @@ aggregate_cmd () {
   fi
   nin=$(echo "$inputs" | wc -l | tr -d ' ')
 
+  # aggregate_loop checks this too and reports it; this is a backstop for a
+  # file that appeared between that check and this one.
   out=${dir}/${prefix}.${year}.nc
   if [ -f "$out" ]; then
-    echo "aggregate: $out exists, skipping"
-    return 0
+    echo "aggregate: ERROR $out appeared while ${year} was being aggregated - inputs kept" >&2
+    echo "${prefix}.${year} (aggregate appeared mid-run)" >> $AGGREGATE_FAILURES
+    return 1
   fi
 
   echo "aggregate: $out <- $nin files"
@@ -142,7 +145,6 @@ aggregate_loop () {
   for tool in ncrcat ncdump; do
     if ! command -v $tool >/dev/null 2>&1; then
       echo "aggregate: ERROR $tool not found, skipping aggregation (is NCO loaded?)" >&2
-      echo "aggregate: ERROR $tool not found, skipping aggregation (is NCO loaded?)"
       rm -f $AGGREGATE_FAILURES
       return 0
     fi
@@ -187,6 +189,22 @@ aggregate_loop () {
 
       # Loop over years
       for year in $years; do
+        # This year list was built from per-date files, so an aggregate that
+        # already exists for this year means per-date files have turned up
+        # beside it.  That cannot happen in normal operation - inputs are
+        # deleted as soon as their aggregate verifies - so it means output
+        # landed after the year had been aggregated, typically a re-run segment
+        # or a run still writing a year this job had already treated as done.
+        # Appending risks duplicate records and deleting risks losing data, so
+        # touch neither and report it: left to the gate below, it would be
+        # dismissed every cycle as an incomplete year and never looked at.
+        if [ -f "${histdir}/${prefix}.${year}.nc" ]; then
+          nleft=$(find ${histdir} -maxdepth 1 -name "${prefix}.${year}-*.nc" 2>/dev/null | wc -l | tr -d ' ')
+          echo "aggregate: ERROR ${prefix}.${year}.nc already exists but ${nleft} per-date file(s) for ${year} are also present - left alone" >&2
+          echo "${prefix}.${year} (aggregate exists alongside ${nleft} per-date file(s))" >> $AGGREGATE_FAILURES
+          continue
+        fi
+
         # A year is aggregated only once all of its files are on disk, so a
         # year still being written is skipped on the evidence rather than on
         # any assumption about which year happens to be last.
@@ -226,8 +244,6 @@ aggregate_loop () {
   if [ "$nfail" -gt 0 ]; then
     echo "${sn}: WARNING ${nfail} aggregation(s) FAILED; all of their input files were kept:" >&2
     sed 's/^/  /' $AGGREGATE_FAILURES >&2
-    echo "${sn}: WARNING ${nfail} aggregation(s) FAILED; all of their input files were kept:"
-    sed 's/^/  /' $AGGREGATE_FAILURES
   else
     echo "${sn}: aggregation completed, no failures."
   fi
@@ -235,8 +251,12 @@ aggregate_loop () {
 }
 
 # Execute the aggregation as a background process
+# 2>&1 sends the error messages to the log as well.  Everything this job has to
+# say belongs in one place: the per-year errors explain the failure summary, and
+# without this they would land in the batch system's stderr file instead, away
+# from the summary that refers to them.
 echo $(date) > $archivedata/aggregate.log.$lid
-aggregate_loop >> $archivedata/aggregate.log.$lid
+aggregate_loop >> $archivedata/aggregate.log.$lid 2>&1
 echo $(date) >> $archivedata/aggregate.log.$lid
 
 unset SLURM_MEM_PER_NODE
