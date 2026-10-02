@@ -46,6 +46,13 @@ if (DEBUG)
 string(APPEND FFLAGS " -check nouninit") 
 endif()
 
+# Symbolic traceback in optimized builds.  -g only adds debug information;
+# because -O2 is set explicitly in intel.cmake it does not lower optimization.
+if (NOT DEBUG)
+  string(APPEND CFLAGS " -g -traceback")
+  string(APPEND FFLAGS " -g -traceback")
+endif()
+
 #if (DEBUG)
 #	string(APPEND SLIBS " -fsanitize=memory")
 #endif()
