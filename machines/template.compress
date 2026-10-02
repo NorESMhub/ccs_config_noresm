@@ -4,6 +4,9 @@
 {{ batchdirectives }}
 
 
+# Set script name
+sn=compress
+
 machine=$(./xmlquery --value MACH)
 if [[ "$machine" == "olivia" ]]; then
 module purge
@@ -14,14 +17,15 @@ elif [[ "$machine" == "betzy" ]]; then
 module purge
 module load NCO/5.1.9-iomkl-2022a
 else
-echo "no proper NCO"    
-exit
+# Nothing can be compressed without NCO.  Exit non-zero: this is the last job
+# in the workflow (see the note below), so failing here stops nothing else, and
+# a bare "exit" would report success for a job that did none of its work -
+# including the rsync of the case directory at the end of this script.
+echo "${sn}: ERROR no NCO module known for machine '${machine}'" >&2
+exit 1
 fi
 
 ntasks=16
-
-# Set script name
-sn=compress
 
 # archive data
 caseroot=$(./xmlquery --value CASEROOT)
@@ -38,18 +42,14 @@ if [ ! -d $archivedata ]; then
 fi
 cd $archivedata
 
-# zip restart files?
-ZIPRES=0
-
 # remove log files?
 RMLOGS=0
 
 # Deflation level passed to ncks -L when rewriting each history file as
 # netCDF-4.  1 is fastest and compresses least, 9 is slowest and compresses
-# most.  For floating point model output the gain above about 4 is small while
+# most. For floating point model output the gain above about 4 is small while
 # the cost keeps rising, so 5 is a deliberate middle choice rather than a
-# default.  Raising it makes this job noticeably longer for a few percent of
-# space.
+# default. Raising it makes this job noticeably longer for a few percent of space.
 complevel=5 # 1-9
 
 lid="$(date +%y%m%d-%H%M%S)"
@@ -60,26 +60,41 @@ convert_cmd () {
   echo convert $ncfile
   rm -f ${ncfile}_tmp
   set -e
-  ncks --no_abc -h -O -4 -L $complevel $ncfile ${ncfile}_tmp
+  # Test ncks rather than letting errexit abort this subshell: a failure has to
+  # be recorded somewhere, and a subshell that has already exited cannot do it.
+  # The original file is never replaced unless ncks succeeded, so a failure
+  # costs nothing but the compression.
+  if ! ncks --no_abc -h -O -4 -L $complevel $ncfile ${ncfile}_tmp; then
+    echo "${sn}: ERROR ncks failed for ${ncfile} - left uncompressed" >&2
+    rm -f ${ncfile}_tmp
+    # This runs in a background subshell, so a shell variable could not be seen
+    # by convert_loop; a file can.
+    echo "${ncfile} (ncks failed)" >> $CONVERT_FAILURES
+    return 1
+  fi
   mv ${ncfile}_tmp ${ncfile}
   chmod go+r ${ncfile}
 }
 
 
-compress_cmd () {
-  if [ $ZIPRES -eq 1 ] ; then
-    echo zip $ncfile
-    gzip $ncfile
-    chmod go+r ${ncfile}.gz
-  fi
-}
-
-
 convert_loop () {
   set -e
+
+  # Each file is converted in a background subshell, so failures cannot be
+  # counted in a shell variable.  Each one appends a line here instead, and the
+  # summary at the end of this function reports them.
+  CONVERT_FAILURES=$(mktemp ${TMPDIR:-/tmp}/convert_failures.XXXXXX)
+
   # loop over cases 
   for ncfile in $(find . -wholename "*/hist/${casename}*.nc" -print); do
-    if [[ "$(ncdump -k $ncfile)" != 'netCDF-4' && "$(ncdump -k $ncfile)" != 'netCDF-4 classic model' ]] ; then
+    # One ncdump per file rather than two: this loop runs over every
+    # history file in the archive. The "|| kind=" matters: a bare
+    # assignment takes ncdump's exit status, and under errexit an
+    # unreadable file would then abort the whole loop and leave the
+    # rest of the archive unconverted.  An empty kind falls through to
+    # ncks, which fails on that file and reports it.
+    kind=$(ncdump -k $ncfile 2>/dev/null) || kind=""
+    if [[ "$kind" != 'netCDF-4' && "$kind" != 'netCDF-4 classic model' ]] ; then
       while :; do
         if [ $(jobs -p|wc -l) -lt $ntasks ]; then
           convert_cmd &
@@ -90,19 +105,38 @@ convert_loop () {
     fi
   done
 
-  for logfile in $(find . -wholename '*/logs/*' -print); do
-      if [ $RMLOGS -eq 1 ] ; then
-        rm -f $logfile
-      fi
-  done
+  # The test goes outside the loop: with RMLOGS=0 the archive was still walked
+  # in full only to decide, once per log file, to do nothing.
+  if [ $RMLOGS -eq 1 ] ; then
+    for logfile in $(find . -wholename '*/logs/*'); do
+      rm -f $logfile
+    done
+  fi
 
   wait
-  echo "${sn}: conversion completed."
+
+  # Report what failed.  Without this the message below claimed success
+  # unconditionally: `wait` returns 0 even when a background job exited
+  # non-zero, so a failed conversion left no trace at all.
+  nfail=$(wc -l < $CONVERT_FAILURES | tr -d ' ')
+  if [ "$nfail" -gt 0 ]; then
+    echo "${sn}: WARNING ${nfail} conversion(s) FAILED; those files are still uncompressed:" >&2
+    sed 's/^/  /' $CONVERT_FAILURES >&2
+  else
+    echo "${sn}: conversion completed, no failures."
+  fi
+  rm -f $CONVERT_FAILURES
 }
 
-# Execute the convert loop as a backgroud process
+# Run the conversion, logging to archive.log.  This call is not backgrounded:
+# the parallelism is inside convert_loop, which waits for every file before it
+# returns, so the rsync below cannot start on a half converted archive.
 echo $(date) > $archivedata/archive.log.$lid
-convert_loop >> $archivedata/archive.log.$lid
+
+# 2>&1 sends the error messages to the log as well, so that the per-file errors
+# sit beside the failure summary that refers to them rather than in the batch
+# system's stderr file.
+convert_loop >> $archivedata/archive.log.$lid 2>&1
 echo $(date) >> $archivedata/archive.log.$lid
 rsync -avh $caseroot $archivedata >> $archivedata/case.log.$lid
 echo $(date) >> $archivedata/archive.log.$lid
