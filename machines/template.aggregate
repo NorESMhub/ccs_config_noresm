@@ -271,7 +271,10 @@ aggregate_loop () {
   rm -f $AGGREGATE_FAILURES
 }
 
-# Execute the aggregation as a background process
+# Run the aggregation, logging to aggregate.log.  This call is not backgrounded:
+# the parallelism is inside aggregate_loop, which waits for every concatenation
+# before it returns.
+#
 # 2>&1 sends the error messages to the log as well.  Everything this job has to
 # say belongs in one place: the per-year errors explain the failure summary, and
 # without this they would land in the batch system's stderr file instead, away
