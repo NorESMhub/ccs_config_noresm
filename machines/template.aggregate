@@ -58,6 +58,11 @@ if [[ "$(./xmlquery --value DOUT_S_AGGREGATE)" == "TRUE" ]]; then
 fi
 AGGREGATE_STREAMS=$(./xmlquery --value DOUT_S_AGGREGATE_STREAMS)
 
+# NO_LEAP or GREGORIAN.  A daily stream has 365 files in a NO_LEAP year but 366
+# in a GREGORIAN leap year, so the number of files that makes a year complete
+# depends on this.  Read here with the others, before the cd to the archive.
+CALENDAR=$(./xmlquery --value CALENDAR)
+
 # Having nothing to aggregate is not an error, so exit 0 rather than 1.
 # config_workflow.xml makes case.compress depend on this job, and every batch
 # system expresses that dependency as "run only if the other job succeeded".
@@ -73,6 +78,30 @@ cd $archivedata
 lid="$(date +%y%m%d-%H%M%S)"
 
 # Functions
+
+expected_count () {
+  # How many files a complete year of one stream holds.
+  #
+  #   $1  the stream's count from DOUT_S_AGGREGATE_STREAMS, e.g. 365 or 12
+  #   $2  four digit year
+  #
+  # A count of 365 means daily output, and a daily GREGORIAN year has 366 files
+  # when it is a leap year.  Every other count is a fixed number of files per
+  # year - 12 for monthly output - and never shifts, and NO_LEAP has no leap
+  # years at all, so in those cases the count is returned unchanged.
+  local base=$1 year=$2
+
+  if [ "$base" -eq 365 ] && [ "$CALENDAR" == "GREGORIAN" ]; then
+    # Leap years are those divisible by 4, except centuries, except those
+    # divisible by 400: 1900 is not a leap year, 2000 is.
+    if [ $((year % 4)) -eq 0 ] && { [ $((year % 100)) -ne 0 ] || [ $((year % 400)) -eq 0 ]; }; then
+      echo 366
+      return
+    fi
+  fi
+  echo $base
+}
+
 
 aggregate_cmd () {
   # Combine one year of one history stream into a single file.
@@ -274,10 +303,13 @@ aggregate_loop () {
 
         # A year is aggregated only once all of its files are on disk, so a
         # year still being written is skipped on the evidence rather than on
-        # any assumption about which year happens to be last.
+        # any assumption about which year happens to be last.  How many files
+        # that is depends on the year itself under a GREGORIAN calendar, so ask
+        # expected_count rather than using the stream's count directly.
+        nexpect=$(expected_count "$stream_count" "$year")
         nfiles=$(find ${histdir} -maxdepth 1 -name "${prefix}.${year}-*.nc" 2>/dev/null | wc -l | tr -d ' ')
-        if [ "$nfiles" -lt "$stream_count" ]; then
-          echo "${sn}: ${prefix}.${year} has ${nfiles} of ${stream_count} files, leaving it alone"
+        if [ "$nfiles" -lt "$nexpect" ]; then
+          echo "${sn}: ${prefix}.${year} has ${nfiles} of ${nexpect} files, leaving it alone"
           continue
         fi
 
