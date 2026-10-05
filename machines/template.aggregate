@@ -4,6 +4,9 @@
 {{ batchdirectives }}
 
 
+# Set script name
+sn=aggregate
+
 machine=$(./xmlquery --value MACH)
 if [[ "$machine" == "olivia" ]]; then
 module purge
@@ -14,14 +17,18 @@ elif [[ "$machine" == "betzy" ]]; then
 module purge
 module load NCO/5.1.9-iomkl-2022a
 else
-echo "no proper NCO"    
-exit
+# Nothing can be aggregated without NCO.  Exit zero, and say so explicitly:
+# case.compress depends on this job and every batch system expresses that
+# dependency as "run only if it succeeded", so a non-zero exit here would leave
+# compression permanently unrun (see the note below).  Nothing was attempted,
+# so the archive is exactly as the model wrote it and there is nothing to fail
+# about.  A bare "exit" returns the status of the preceding command, which is
+# this echo today but would silently change if anything were inserted above it.
+echo "${sn}: ERROR no NCO module known for machine '${machine}', skipping aggregation" >&2
+exit 0
 fi
 
 ntasks=16
-
-# Set script name
-sn=aggregate
 
 # archive data
 caseroot=$(./xmlquery --value CASEROOT)
@@ -97,16 +104,16 @@ aggregate_cmd () {
   # file that appeared between that check and this one.
   out=${dir}/${prefix}.${year}.nc
   if [ -f "$out" ]; then
-    echo "aggregate: ERROR $out appeared while ${year} was being aggregated - inputs kept" >&2
+    echo "${sn}: ERROR $out appeared while ${year} was being aggregated - inputs kept" >&2
     echo "${prefix}.${year} (aggregate appeared mid-run)" >> $AGGREGATE_FAILURES
     return 1
   fi
 
-  echo "aggregate: $out <- $nin files"
+  echo "${sn}: $out <- $nin files"
   # -h suppresses ncrcat's own history entry, which names every input file
   # (~21 KB on one line for a year of dailies).  A compact one is added below.
   if ! ncrcat -O -h $inputs ${out}_tmp; then
-    echo "aggregate: ERROR ncrcat failed for ${prefix}.${year} - inputs kept" >&2
+    echo "${sn}: ERROR ncrcat failed for ${prefix}.${year} - inputs kept" >&2
     # ncrcat writes through its own temp file and does not remove it when it
     # dies, so clear that as well as our own partial output.
     rm -f ${out}_tmp ${out}_tmp.pid*.ncrcat.tmp
@@ -114,9 +121,15 @@ aggregate_cmd () {
     return 1
   fi
 
-  nout=$(ncdump -h ${out}_tmp | sed -n 's/.*time = UNLIMITED ; \/\/ (\([0-9]*\) currently).*/\1/p')
+  # Pull the record count out of the time dimension line of the CDL header,
+  # e.g. "time = UNLIMITED ; // (365 currently)".  Matching only the dimension
+  # name and the first parenthesised number keeps this independent of ncdump's
+  # spacing and of the word "currently"; ! as the sed delimiter leaves the //
+  # in the header unescaped.  An unmatched header gives an empty nout, which
+  # fails the comparison below and is reported rather than passing silently.
+  nout=$(ncdump -h ${out}_tmp | sed -n 's!^[[:space:]]*time = UNLIMITED.*(\([0-9][0-9]*\).*!\1!p')
   if [ "$nout" != "$nin" ]; then
-    echo "aggregate: ERROR $out has $nout records, expected $nin - inputs kept" >&2
+    echo "${sn}: ERROR $out has $nout records, expected $nin - inputs kept" >&2
     rm -f ${out}_tmp
     # Record the failure by name.  This runs in a background subshell, so a
     # shell variable could not be seen by aggregate_loop; a file can.
@@ -139,18 +152,20 @@ aggregate_cmd () {
   hist="\n${timestamp}: case.aggregate: "
   hist+="ncrcat of ${nin} files matching ${prefix}.${year}-*.nc"
   if ! ncatted -O -h -a history,global,a,c,"$hist" ${out}_tmp; then
-    echo "aggregate: WARNING could not add a history entry to $out" >&2
+    echo "${sn}: WARNING could not add a history entry to $out" >&2
   fi
 
   mv ${out}_tmp $out
   chmod go+r $out
   rm -f $inputs
-  echo "aggregate: removed $nin input files"
+  echo "${sn}: removed $nin input files"
 }
 
 
 aggregate_loop () {
-  [ $AGGREGATE -eq 1 ] || return 0
+  if [ $AGGREGATE -ne 1 ]; then
+    return 0
+  fi
 
   # Each year is concatenated in a background subshell, so failures cannot be
   # counted in a shell variable.  Each one appends a line here instead, and the
@@ -163,7 +178,7 @@ aggregate_loop () {
   # than abort, so that compression and the rsync still run.
   for tool in ncrcat ncdump; do
     if ! command -v $tool >/dev/null 2>&1; then
-      echo "aggregate: ERROR $tool not found, skipping aggregation (is NCO loaded?)" >&2
+      echo "${sn}: ERROR $tool not found, skipping aggregation (is NCO loaded?)" >&2
       rm -f $AGGREGATE_FAILURES
       return 0
     fi
@@ -181,7 +196,9 @@ aggregate_loop () {
       # Stripping up to the colon returns the string unchanged when there is no
       # colon, so an unchanged value means the count is missing altogether.
       no_colon_present=false
-      [[ "$stream_count" == "$stream" ]] && no_colon_present=true
+      if [[ "$stream_count" == "$stream" ]]; then
+        no_colon_present=true
+      fi
 
       # A count must be a plain positive integer.  Rejecting 0 matters: it
       # would make every year look complete, including one with no files.
@@ -189,7 +206,7 @@ aggregate_loop () {
       echo "$stream_count" | grep -qE '^[1-9][0-9]*$' || count_is_positive_integer=false
 
       if $no_colon_present || ! $count_is_positive_integer; then
-        echo "aggregate: ERROR '${stream}' is not of the form <component>.<stream>:<count>, skipping" >&2
+        echo "${sn}: ERROR '${stream}' is not of the form <component>.<stream>:<count>, skipping" >&2
         echo "${stream} (malformed DOUT_S_AGGREGATE_STREAMS entry)" >> $AGGREGATE_FAILURES
         continue
       fi
@@ -221,7 +238,7 @@ aggregate_loop () {
         # dismissed every cycle as an incomplete year and never looked at.
         if [ -f "${histdir}/${prefix}.${year}.nc" ]; then
           nleft=$(find ${histdir} -maxdepth 1 -name "${prefix}.${year}-*.nc" 2>/dev/null | wc -l | tr -d ' ')
-          echo "aggregate: ERROR ${prefix}.${year}.nc already exists but ${nleft} per-date file(s) for ${year} are also present - left alone" >&2
+          echo "${sn}: ERROR ${prefix}.${year}.nc already exists but ${nleft} per-date file(s) for ${year} are also present - left alone" >&2
           echo "${prefix}.${year} (aggregate exists alongside ${nleft} per-date file(s))" >> $AGGREGATE_FAILURES
           continue
         fi
@@ -231,7 +248,7 @@ aggregate_loop () {
         # any assumption about which year happens to be last.
         nfiles=$(find ${histdir} -maxdepth 1 -name "${prefix}.${year}-*.nc" 2>/dev/null | wc -l | tr -d ' ')
         if [ "$nfiles" -lt "$stream_count" ]; then
-          echo "aggregate: ${prefix}.${year} has ${nfiles} of ${stream_count} files, leaving it alone"
+          echo "${sn}: ${prefix}.${year} has ${nfiles} of ${stream_count} files, leaving it alone"
           continue
         fi
 
