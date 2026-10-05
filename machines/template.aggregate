@@ -17,13 +17,8 @@ elif [[ "$machine" == "betzy" ]]; then
 module purge
 module load NCO/5.1.9-iomkl-2022a
 else
-# Nothing can be aggregated without NCO.  Exit zero, and say so explicitly:
-# case.compress depends on this job and every batch system expresses that
-# dependency as "run only if it succeeded", so a non-zero exit here would leave
-# compression permanently unrun (see the note below).  Nothing was attempted,
-# so the archive is exactly as the model wrote it and there is nothing to fail
-# about.  A bare "exit" returns the status of the preceding command, which is
-# this echo today but would silently change if anything were inserted above it.
+# No NCO, so nothing can be aggregated.  Exit 0, not 1: case.compress only
+# runs if this job succeeds, so failing here would stop compression too.
 echo "${sn}: ERROR no NCO module known for machine '${machine}', skipping aggregation" >&2
 exit 0
 fi
@@ -35,40 +30,28 @@ caseroot=$(./xmlquery --value CASEROOT)
 archivedata=$(./xmlquery --value DOUT_S_ROOT)
 casename=$(./xmlquery --value CASE)
 
-# Concatenate history files into one file per year?  Both settings come from
-# the case, so they are changed with xmlchange rather than by editing this
-# script, and they survive ./case.setup --reset:
+# Concatenate history files into one file per year?  Set in the case, e.g.
 #
 #   ./xmlchange DOUT_S_AGGREGATE=TRUE
 #   ./xmlchange DOUT_S_AGGREGATE_STREAMS="cice.h1:365 mosart.h0a:12"
 #
-# The stream :count specification (e.g. cice.h1:365) specifies that a
-# complete year must have 365 time samples The count is required: it
-# is what distinguishes a finished year from one still being written,
-# and without it a partial year would be concatenated.  Only years
-# that are certainly complete are aggregated.  Input files are removed
-# only after the record count of the aggregate has been verified against them.
+# The :count is how many files a complete year holds, and is required: it is
+# what tells a finished year from one still being written.
 #
-# These are read here, while the working directory is still the case: xmlquery
-# identifies the case from the directory it is run in, not from its own path,
-# so it cannot be used once this script has cd'd to the archive.
+# Read here, before the cd below.  xmlquery works out the case from the
+# directory it is run in, so it cannot be used from the archive.
 AGGREGATE=0
 if [[ "$(./xmlquery --value DOUT_S_AGGREGATE)" == "TRUE" ]]; then
   AGGREGATE=1
 fi
 AGGREGATE_STREAMS=$(./xmlquery --value DOUT_S_AGGREGATE_STREAMS)
 
-# NO_LEAP or GREGORIAN.  A daily stream has 365 files in a NO_LEAP year but 366
-# in a GREGORIAN leap year, so the number of files that makes a year complete
-# depends on this.  Read here with the others, before the cd to the archive.
+# NO_LEAP or GREGORIAN.  A daily year holds 365 files, or 366 if GREGORIAN and
+# the year is a leap year - see expected_count below.
 CALENDAR=$(./xmlquery --value CALENDAR)
 
-# Having nothing to aggregate is not an error, so exit 0 rather than 1.
-# config_workflow.xml makes case.compress depend on this job, and every batch
-# system expresses that dependency as "run only if the other job succeeded".
-# A non-zero exit here therefore leaves compression permanently unrun: the
-# dependency can never be satisfied and the queued job is eventually discarded.
-# Failure from this script should only occur where that outcome is genuinely wanted.
+# Nothing to aggregate is not an error.  Exit 0 for the same reason as above:
+# case.compress runs only if this job succeeds.
 if [ ! -d $archivedata ]; then
   echo "${sn}: ${archivedata} is not a directory, nothing to aggregate."
   exit 0
@@ -82,18 +65,15 @@ lid="$(date +%y%m%d-%H%M%S)"
 expected_count () {
   # How many files a complete year of one stream holds.
   #
-  #   $1  the stream's count from DOUT_S_AGGREGATE_STREAMS, e.g. 365 or 12
+  #   $1  the stream's count, e.g. 365 for daily or 12 for monthly
   #   $2  four digit year
   #
-  # A count of 365 means daily output, and a daily GREGORIAN year has 366 files
-  # when it is a leap year.  Every other count is a fixed number of files per
-  # year - 12 for monthly output - and never shifts, and NO_LEAP has no leap
-  # years at all, so in those cases the count is returned unchanged.
+  # 365 means daily output, which is 366 in a GREGORIAN leap year.  Any other
+  # count, and any NO_LEAP year, comes back unchanged.
   local base=$1 year=$2
 
   if [ "$base" -eq 365 ] && [ "$CALENDAR" == "GREGORIAN" ]; then
-    # Leap years are those divisible by 4, except centuries, except those
-    # divisible by 400: 1900 is not a leap year, 2000 is.
+    # Divisible by 4, but not by 100 unless also by 400: 1900 no, 2000 yes.
     if [ $((year % 4)) -eq 0 ] && { [ $((year % 100)) -ne 0 ] || [ $((year % 400)) -eq 0 ]; }; then
       echo 366
       return
@@ -106,20 +86,14 @@ expected_count () {
 aggregate_cmd () {
   # Combine one year of one history stream into a single file.
   #
-  # Concatenates <prefix>.<year>-*.nc into <prefix>.<year>.nc along the time
-  # dimension, then checks that the result holds one record per input file before
-  # deleting any of them.  If that check fails, the part built so far is discarded
-  # and every input is kept, so nothing can be lost to a partial or corrupt
-  # concatenation.
-  #
-  # Does nothing if the year has no files, or if its combined file already exists,
-  # which is what makes the job safe to run repeatedly over the same archive.
-  #
   #   $1  directory holding the files, e.g. <archive>/ice/hist
   #   $2  filename prefix through the stream, e.g. <case>.cice.h1
   #   $3  four digit year
   #
-  # Returns non-zero only when the record count did not verify.
+  # Concatenates <prefix>.<year>-*.nc into <prefix>.<year>.nc, and deletes the
+  # inputs only once the result has been checked to hold one record per input.
+  # Any failure keeps every input file and returns non-zero.  Does nothing if
+  # the year has no files, so the job is safe to re-run over the same archive.
   local dir=$1 prefix=$2 year=$3
   local inputs nin out nout timestamp hist
 
@@ -129,8 +103,7 @@ aggregate_cmd () {
   fi
   nin=$(echo "$inputs" | wc -l | tr -d ' ')
 
-  # aggregate_loop checks this too and reports it; this is a backstop for a
-  # file that appeared between that check and this one.
+  # aggregate_loop checks this too; this catches a file that appeared since.
   out=${dir}/${prefix}.${year}.nc
   if [ -f "$out" ]; then
     echo "${sn}: ERROR $out appeared while ${year} was being aggregated - inputs kept" >&2
@@ -139,44 +112,35 @@ aggregate_cmd () {
   fi
 
   echo "${sn}: $out <- $nin files"
-  # -h suppresses ncrcat's own history entry, which names every input file
-  # (~21 KB on one line for a year of dailies).  A compact one is added below.
+  # -h drops ncrcat's own history entry, which lists every input file (~21 KB
+  # on one line for a year of dailies).  A short one is added below instead.
   if ! ncrcat -O -h $inputs ${out}_tmp; then
     echo "${sn}: ERROR ncrcat failed for ${prefix}.${year} - inputs kept" >&2
-    # ncrcat writes through its own temp file and does not remove it when it
-    # dies, so clear that as well as our own partial output.
+    # ncrcat leaves its own temp file behind when it dies, so clear that too.
     rm -f ${out}_tmp ${out}_tmp.pid*.ncrcat.tmp
     echo "${prefix}.${year} (ncrcat failed)" >> $AGGREGATE_FAILURES
     return 1
   fi
 
-  # Pull the record count out of the time dimension line of the CDL header,
-  # e.g. "time = UNLIMITED ; // (365 currently)".  Matching only the dimension
-  # name and the first parenthesised number keeps this independent of ncdump's
-  # spacing and of the word "currently"; ! as the sed delimiter leaves the //
-  # in the header unescaped.  An unmatched header gives an empty nout, which
-  # fails the comparison below and is reported rather than passing silently.
+  # The concatenated file must hold one time record per input file, or nothing
+  # is deleted.  "ncdump -h" prints a header line like
+  # "time = UNLIMITED ; // (365 currently)" and the sed takes the 365 from it.
+  # If nothing matches, nout is empty and fails the test, so a bad count can
+  # never pass as a good one.
   nout=$(ncdump -h ${out}_tmp | sed -n 's!^[[:space:]]*time = UNLIMITED.*(\([0-9][0-9]*\).*!\1!p')
   if [ "$nout" != "$nin" ]; then
     echo "${sn}: ERROR $out has $nout records, expected $nin - inputs kept" >&2
     rm -f ${out}_tmp
-    # Record the failure by name.  This runs in a background subshell, so a
-    # shell variable could not be seen by aggregate_loop; a file can.
+    # Record the year in a file: this runs in a background subshell, so a
+    # shell variable would not be visible back in aggregate_loop.
     echo "${prefix}.${year} ($nout records, expected $nin)" >> $AGGREGATE_FAILURES
     return 1
   fi
 
-  # Record how the file was built by appending one line to its history
-  # attribute.  The five comma-separated fields of -a are
-  # name,variable,mode,type,value:
-  #
-  #   history  the attribute to edit
-  #   global   a file-level attribute, not one belonging to a variable
-  #   a        append, which keeps the model's own history rather than
-  #            replacing it (that history is inherited from the first input)
-  #   c        the value is of type char
-  #
-  # -h stops ncatted from adding its own command line after ours.
+  # Note how the file was built by appending a line to its history attribute.
+  # The -a fields are name,variable,mode,type,value: edit "history", a "global"
+  # attribute, "a"ppend so the model's own history is kept, of type "c"har.
+  # -h stops ncatted adding its own command line after ours.
   timestamp=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
   hist="\n${timestamp}: case.aggregate: "
   hist+="ncrcat of ${nin} files matching ${prefix}.${year}-*.nc"
@@ -184,22 +148,18 @@ aggregate_cmd () {
     echo "${sn}: WARNING could not add a history entry to $out" >&2
   fi
 
-  # Check whether mv worked before deleting anything.  Nothing else will: the
-  # -e in the "#!/bin/bash -e" line at the top of this script normally makes
-  # the shell quit as soon as a command fails, but bash switches it off inside
-  # a function that is called as the condition of an "if", which is how
-  # aggregate_loop calls this one.  So without this check a failed mv would
-  # carry straight on to the "rm -f $inputs" below and delete the year's
-  # history files, leaving the data only in ${out}_tmp - a name nothing in this
-  # script ever looks for again.
+  # Check mv before deleting anything.  The -e at the top of this script does
+  # not help here: bash switches it off inside a function called as the
+  # condition of an "if", which is how aggregate_loop calls this one.  Without
+  # this check a failed mv would carry on to the "rm -f $inputs" below and
+  # delete the year's history files.
   if ! mv ${out}_tmp $out; then
     echo "${sn}: ERROR could not move ${out}_tmp into place - inputs kept" >&2
     echo "${prefix}.${year} (mv failed)" >> $AGGREGATE_FAILURES
     return 1
   fi
 
-  # A failed chmod only leaves the file unreadable to others; the records have
-  # been verified and the inputs are still safe to remove, so warn and go on.
+  # A failed chmod only makes the file unreadable to others, so warn and go on.
   if ! chmod go+r $out; then
     echo "${sn}: WARNING could not chmod go+r $out" >&2
   fi
@@ -214,15 +174,12 @@ aggregate_loop () {
     return 0
   fi
 
-  # Each year is concatenated in a background subshell, so failures cannot be
-  # counted in a shell variable.  Each one appends a line here instead, and the
-  # summary at the end of this function reports them.
+  # Years are concatenated in background subshells, which cannot report back
+  # through a shell variable, so each failure appends a line to this file.
   AGGREGATE_FAILURES=$(mktemp ${TMPDIR:-/tmp}/aggregate_failures.XXXXXX)
 
-  # ncrcat does the concatenation and ncdump verifies the result before any
-  # input is deleted, so both must be present.  Loading NCO is handled above
-  # and is machine specific; if it did not happen, skip aggregation rather
-  # than abort, so that compression and the rsync still run.
+  # Both NCO tools are needed: ncrcat concatenates and ncdump checks the
+  # result.  If NCO was not loaded above, skip aggregation rather than fail.
   for tool in ncrcat ncdump; do
     if ! command -v $tool >/dev/null 2>&1; then
       echo "${sn}: ERROR $tool not found, skipping aggregation (is NCO loaded?)" >&2
@@ -230,27 +187,20 @@ aggregate_loop () {
       return 0
     fi
   done
-  # Check DOUT_S_AGGREGATE_STREAMS once, here, rather than inside the loop over
-  # history directories below.  Nothing in this check looks at a directory, so
-  # doing it there printed the same complaint once per component - six or more
-  # identical errors for one typo - and counted every repeat as a separate
-  # failure in the summary.
+  # Each entry must be <component>.<stream>:<count>, e.g. cice.h1:365 for
+  # daily output or mosart.h0a:12 for monthly.
   #
-  # Each entry must be <component>.<stream>:<count>, where count is how many
-  # files a complete year of that stream contains, e.g. cice.h1:365 for daily
-  # output and mosart.h0a:12 for monthly.  The count is required: it is what
-  # distinguishes a finished year from one still being written, and without it
-  # a partial year would be concatenated.
+  # Checked once here, not inside the loop over history directories below.
+  # Nothing in the check looks at a directory, so doing it there reported one
+  # bad entry once per component and counted each repeat as a failure.
   good_streams=""
   for stream in $AGGREGATE_STREAMS; do
     stream_count=${stream#*:}
     if [[ "$stream_count" == "$stream" ]]; then
-      # Stripping up to the colon returns the string unchanged when there is
-      # no colon, so an unchanged value means the count is missing altogether.
+      # Stripping up to the colon changes nothing if there is no colon.
       problem="no :count given"
     elif [[ ! "$stream_count" =~ ^[1-9][0-9]*$ ]]; then
-      # A count must be a plain positive integer.  Rejecting 0 matters: it
-      # would make every year look complete, including one with no files.
+      # 0 is rejected too: it would make every year look complete.
       problem="count '${stream_count}' is not a positive integer"
     else
       problem=""
@@ -269,13 +219,11 @@ aggregate_loop () {
       stream_name=${stream%%:*}
       stream_count=${stream#*:}
 
-      # Collect the years for which per-date history files exist, e.g. 1526
-      # from <case>.cice.h1.1526-01-01.nc.  The trailing hyphen in the pattern
-      # is what distinguishes those from an already aggregated year such as
-      # <case>.cice.h1.1526.nc, so an aggregate is never used as input.
-      # use 'find' rather than a shell 'glob': a glob would expand every per-date file
-      # of every year onto one command line, which can exceed ARG_MAX on a
-      # large archive (a decade of daily output is thousands of files).
+      # Which years have per-date files, e.g. 1526 from
+      # <case>.cice.h1.1526-01-01.nc.  The hyphen in the pattern keeps an
+      # already aggregated <case>.cice.h1.1526.nc from being used as input.
+      # find rather than a glob: a glob would put thousands of filenames on one
+      # command line and can exceed ARG_MAX on a large archive.
       prefix=${casename}.${stream_name}
       years=$(find ${histdir} -maxdepth 1 -name "${prefix}.*-*.nc" 2>/dev/null |
                sed -n "s|.*/${prefix}\.\([0-9][0-9][0-9][0-9]\)-.*|\1|p" | sort -u)
@@ -283,17 +231,12 @@ aggregate_loop () {
           continue
       fi
 
-      # Loop over years
       for year in $years; do
-        # This year list was built from per-date files, so an aggregate that
-        # already exists for this year means per-date files have turned up
-        # beside it.  That cannot happen in normal operation - inputs are
-        # deleted as soon as their aggregate verifies - so it means output
-        # landed after the year had been aggregated, typically a re-run segment
-        # or a run still writing a year this job had already treated as done.
+        # An aggregate already here means per-date files turned up beside it,
+        # usually a re-run segment writing a year this job had treated as done.
         # Appending risks duplicate records and deleting risks losing data, so
-        # touch neither and report it: left to the gate below, it would be
-        # dismissed every cycle as an incomplete year and never looked at.
+        # do neither and report it - the gate below would just skip it every
+        # cycle as an incomplete year.
         if [ -f "${histdir}/${prefix}.${year}.nc" ]; then
           nleft=$(find ${histdir} -maxdepth 1 -name "${prefix}.${year}-*.nc" 2>/dev/null | wc -l | tr -d ' ')
           echo "${sn}: ERROR ${prefix}.${year}.nc already exists but ${nleft} per-date file(s) for ${year} are also present - left alone" >&2
@@ -301,11 +244,9 @@ aggregate_loop () {
           continue
         fi
 
-        # A year is aggregated only once all of its files are on disk, so a
-        # year still being written is skipped on the evidence rather than on
-        # any assumption about which year happens to be last.  How many files
-        # that is depends on the year itself under a GREGORIAN calendar, so ask
-        # expected_count rather than using the stream's count directly.
+        # Only aggregate a year once all of its files are on disk, so a year
+        # still being written is left alone.  How many files that is can depend
+        # on the year itself, so ask expected_count.
         nexpect=$(expected_count "$stream_count" "$year")
         nfiles=$(find ${histdir} -maxdepth 1 -name "${prefix}.${year}-*.nc" 2>/dev/null | wc -l | tr -d ' ')
         if [ "$nfiles" -lt "$nexpect" ]; then
@@ -313,17 +254,12 @@ aggregate_loop () {
           continue
         fi
 
-        # Run up to $ntasks concatenations at once.  `jobs -rp` lists the
-        # background jobs still running, so while that count is at the limit,
-        # wait a second and look again.  The trailing & is what gives the
-        # parallelism: it backgrounds the call so the loop moves straight on to
-        # the next year instead of waiting for this ncrcat to finish.
+        # Run up to $ntasks concatenations at once: jobs -rp counts those
+        # still running, and the trailing & backgrounds each call so the loop
+        # moves on to the next year instead of waiting for this ncrcat.
         #
-        # One bad year must not stop the rest of the archiving, so its failure
-        # is caught here and deliberately not passed on.  aggregate_cmd has
-        # already printed what went wrong and written the year to
-        # AGGREGATE_FAILURES, which the summary at the end of this function
-        # reports, so there is nothing left for this branch to do.
+        # A failed year is caught here and deliberately not passed on, so one
+        # bad year cannot stop the rest.  aggregate_cmd has already reported it.
         while [ "$(jobs -rp | wc -l)" -ge "$ntasks" ]; do
           sleep 1
         done
@@ -334,14 +270,12 @@ aggregate_loop () {
       done # end of year loop
     done # end of stream loop
   done # end of histdir loop
-  # block until every backgrounded concatenation has finished, so that the
-  # message below is true and the compression pass that follows never sees a
-  # half written file
+  # Wait for every concatenation, so the compress job that follows never sees
+  # a half written file.
   wait
 
-  # Report what failed.  The job still exits 0 (see the note at the top of this
-  # script), so this summary is the only signal that something went wrong -
-  # make it explicit rather than silently claiming success.
+  # Report what failed.  The job exits 0 either way, so this summary is the
+  # only sign that something went wrong.
   nfail=$(wc -l < $AGGREGATE_FAILURES | tr -d ' ')
   if [ "$nfail" -gt 0 ]; then
     echo "${sn}: WARNING ${nfail} aggregation(s) FAILED; all of their input files were kept:" >&2
@@ -352,14 +286,10 @@ aggregate_loop () {
   rm -f $AGGREGATE_FAILURES
 }
 
-# Run the aggregation, logging to aggregate.log.  This call is not backgrounded:
-# the parallelism is inside aggregate_loop, which waits for every concatenation
-# before it returns.
-#
-# 2>&1 sends the error messages to the log as well.  Everything this job has to
-# say belongs in one place: the per-year errors explain the failure summary, and
-# without this they would land in the batch system's stderr file instead, away
-# from the summary that refers to them.
+# Run the aggregation, logging to aggregate.log.  Not backgrounded: the
+# parallelism is inside aggregate_loop, which waits for every concatenation.
+# 2>&1 keeps the per-year errors in the same log as the summary that refers to
+# them, rather than in the batch system's stderr file.
 echo $(date) > $archivedata/aggregate.log.$lid
 aggregate_loop >> $archivedata/aggregate.log.$lid 2>&1
 echo $(date) >> $archivedata/aggregate.log.$lid
@@ -367,8 +297,6 @@ echo $(date) >> $archivedata/aggregate.log.$lid
 unset SLURM_MEM_PER_NODE
 unset SLURM_MEM_PER_CPU
 
-# Exit 0 even if something above went wrong.  As described at the top,
-# case.compress runs only if this job succeeds, so an aggregation problem must
-# not be allowed to stop compression as well.  Anything that did go wrong is
-# reported in aggregate.log, and a failed year keeps all of its input files.
+# Exit 0 even if something went wrong: case.compress runs only if this job
+# succeeds.  Failures are in aggregate.log, and a failed year keeps its inputs.
 exit 0
