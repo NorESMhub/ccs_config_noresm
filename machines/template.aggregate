@@ -155,8 +155,26 @@ aggregate_cmd () {
     echo "${sn}: WARNING could not add a history entry to $out" >&2
   fi
 
-  mv ${out}_tmp $out
-  chmod go+r $out
+  # Check whether mv worked before deleting anything.  Nothing else will: the
+  # -e in the "#!/bin/bash -e" line at the top of this script normally makes
+  # the shell quit as soon as a command fails, but bash switches it off inside
+  # a function that is called as the condition of an "if", which is how
+  # aggregate_loop calls this one.  So without this check a failed mv would
+  # carry straight on to the "rm -f $inputs" below and delete the year's
+  # history files, leaving the data only in ${out}_tmp - a name nothing in this
+  # script ever looks for again.
+  if ! mv ${out}_tmp $out; then
+    echo "${sn}: ERROR could not move ${out}_tmp into place - inputs kept" >&2
+    echo "${prefix}.${year} (mv failed)" >> $AGGREGATE_FAILURES
+    return 1
+  fi
+
+  # A failed chmod only leaves the file unreadable to others; the records have
+  # been verified and the inputs are still safe to remove, so warn and go on.
+  if ! chmod go+r $out; then
+    echo "${sn}: WARNING could not chmod go+r $out" >&2
+  fi
+
   rm -f $inputs
   echo "${sn}: removed $nin input files"
 }
@@ -252,20 +270,23 @@ aggregate_loop () {
           continue
         fi
 
-        # Run up to $ntasks concatenations at once, the same way convert_loop
-        # throttles convert_cmd.  The trailing & is what gives the parallelism:
-        # it backgrounds the call so the loop moves straight on to the next
-        # year instead of waiting for this ncrcat to finish.  `jobs -p` lists
-        # this shell's background jobs, so the count is the concurrency; while
-        # it is at the limit, sleep and look again.  The || true keeps one
-        # failed year from aborting the rest of the archiving.
-        while :; do
-          if [ $(jobs -p|wc -l) -lt $ntasks ]; then
-            aggregate_cmd "$histdir" "$prefix" "$year" || true &
-            break
-          fi
-          sleep 1s
+        # Run up to $ntasks concatenations at once.  `jobs -rp` lists the
+        # background jobs still running, so while that count is at the limit,
+        # wait a second and look again.  The trailing & is what gives the
+        # parallelism: it backgrounds the call so the loop moves straight on to
+        # the next year instead of waiting for this ncrcat to finish.
+        #
+        # One bad year must not stop the rest of the archiving, so its failure
+        # is caught here and deliberately not passed on.  aggregate_cmd has
+        # already printed what went wrong and written the year to
+        # AGGREGATE_FAILURES, which the summary at the end of this function
+        # reports, so there is nothing left for this branch to do.
+        while [ "$(jobs -rp | wc -l)" -ge "$ntasks" ]; do
+          sleep 1
         done
+        if ! aggregate_cmd "$histdir" "$prefix" "$year"; then
+          true   # already reported; keep going with the next year
+        fi &
 
       done # end of year loop
     done # end of stream loop
