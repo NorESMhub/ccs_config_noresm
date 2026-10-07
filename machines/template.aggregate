@@ -65,21 +65,32 @@ lid="$(date +%y%m%d-%H%M%S)"
 expected_count () {
   # How many files a complete year of one stream holds.
   #
-  #   $1  the stream's count, e.g. 365 for daily or 12 for monthly
+  #   $1  the stream's frequency: daily, monthly, or a plain file count
   #   $2  four digit year
   #
-  # 365 means daily output, which is 366 in a GREGORIAN leap year.  Any other
-  # count, and any NO_LEAP year, comes back unchanged.
-  local base=$1 year=$2
+  # monthly is always 12.  daily is 365, or 366 in a GREGORIAN leap year.  A
+  # plain number is returned unchanged, so an explicit count still works.
+  local freq=$1 year=$2
 
-  if [ "$base" -eq 365 ] && [ "$CALENDAR" == "GREGORIAN" ]; then
-    # Divisible by 4, but not by 100 unless also by 400: 1900 no, 2000 yes.
-    if [ $((year % 4)) -eq 0 ] && { [ $((year % 100)) -ne 0 ] || [ $((year % 400)) -eq 0 ]; }; then
-      echo 366
-      return
-    fi
-  fi
-  echo $base
+  case $freq in
+    monthly)
+      echo 12
+      ;;
+    daily)
+      # Leap years are divisible by 4, but not by 100 unless also by 400:
+      # 1900 is not a leap year, 2000 is.  NO_LEAP has none at all.
+      if [ "$CALENDAR" == "GREGORIAN" ] &&
+         [ $((year % 4)) -eq 0 ] &&
+         { [ $((year % 100)) -ne 0 ] || [ $((year % 400)) -eq 0 ]; }; then
+        echo 366
+      else
+        echo 365
+      fi
+      ;;
+    *)
+      echo $freq
+      ;;
+  esac
 }
 
 
@@ -187,27 +198,28 @@ aggregate_loop () {
       return 0
     fi
   done
-  # Each entry must be <component>.<stream>:<count>, e.g. cice.h1:365 for
-  # daily output or mosart.h0a:12 for monthly.
+  # Each entry must be <component>.<stream>:<frequency>, e.g. cice.h1:daily or
+  # mosart.h0a:monthly.  A plain file count is still accepted in place of the
+  # frequency, so cice.h1:365 keeps working.
   #
   # Checked once here, not inside the loop over history directories below.
   # Nothing in the check looks at a directory, so doing it there reported one
   # bad entry once per component and counted each repeat as a failure.
   good_streams=""
   for stream in $AGGREGATE_STREAMS; do
-    stream_count=${stream#*:}
-    if [[ "$stream_count" == "$stream" ]]; then
+    stream_freq=${stream#*:}
+    if [[ "$stream_freq" == "$stream" ]]; then
       # Stripping up to the colon changes nothing if there is no colon.
-      problem="no :count given"
-    elif [[ ! "$stream_count" =~ ^[1-9][0-9]*$ ]]; then
-      # 0 is rejected too: it would make every year look complete.
-      problem="count '${stream_count}' is not a positive integer"
+      problem="no :daily or :monthly given"
+    elif [[ ! "$stream_freq" =~ ^(daily|monthly|[1-9][0-9]*)$ ]]; then
+      # A count of 0 is rejected too: it would make every year look complete.
+      problem="'${stream_freq}' is not daily, monthly or a positive file count"
     else
       problem=""
     fi
 
     if [ -n "$problem" ]; then
-      echo "${sn}: ERROR '${stream}' is not of the form <component>.<stream>:<count> - ${problem}, skipping" >&2
+      echo "${sn}: ERROR '${stream}' is not of the form <component>.<stream>:<frequency> - ${problem}, skipping" >&2
       echo "${stream} (malformed DOUT_S_AGGREGATE_STREAMS entry: ${problem})" >> $AGGREGATE_FAILURES
       continue
     fi
@@ -217,7 +229,7 @@ aggregate_loop () {
   for histdir in $(find . -type d -wholename "*/hist"); do
     for stream in $good_streams; do
       stream_name=${stream%%:*}
-      stream_count=${stream#*:}
+      stream_freq=${stream#*:}
 
       # Which years have per-date files, e.g. 1526 from
       # <case>.cice.h1.1526-01-01.nc.  The hyphen in the pattern keeps an
@@ -225,7 +237,7 @@ aggregate_loop () {
       # find rather than a glob: a glob would put thousands of filenames on one
       # command line and can exceed ARG_MAX on a large archive.
       prefix=${casename}.${stream_name}
-      years=$(find ${histdir} -maxdepth 1 -wholename -name "${prefix}.*-*.nc" 2>/dev/null |
+      years=$(find ${histdir} -maxdepth 1 -name "${prefix}.*-*.nc" 2>/dev/null |
                sed -n "s|.*/${prefix}\.\([0-9][0-9][0-9][0-9]\)-.*|\1|p" | sort -u)
       if [ -z "$years" ]; then
           continue
@@ -247,7 +259,7 @@ aggregate_loop () {
         # Only aggregate a year once all of its files are on disk, so a year
         # still being written is left alone.  How many files that is can depend
         # on the year itself, so ask expected_count.
-        nexpect=$(expected_count "$stream_count" "$year")
+        nexpect=$(expected_count "$stream_freq" "$year")
         nfiles=$(find ${histdir} -maxdepth 1 -name "${prefix}.${year}-*.nc" 2>/dev/null | wc -l | tr -d ' ')
         if [ "$nfiles" -lt "$nexpect" ]; then
           echo "${sn}: ${prefix}.${year} has ${nfiles} of ${nexpect} files, leaving it alone"
