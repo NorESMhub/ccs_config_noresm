@@ -181,6 +181,8 @@ aggregate_cmd () {
 
 
 aggregate_loop () {
+  declare -g AGGREGATE  # show intent that this variable needs to be global
+
   if [ $AGGREGATE -ne 1 ]; then
     return 0
   fi
@@ -244,11 +246,15 @@ aggregate_loop () {
       fi
 
       for year in $years; do
-        # An aggregate already here means per-date files turned up beside it,
-        # usually a re-run segment writing a year this job had treated as done.
-        # Appending risks duplicate records and deleting risks losing data, so
-        # do neither and report it - the gate below would just skip it every
-        # cycle as an incomplete year.
+        # The yearly file and per-date files for the same year are both here,
+        # e.g. <case>.cice.h1.1850.nc next to <case>.cice.h1.1850-07-01.nc.
+        # Normally they never coexist: the per-date files are deleted as soon
+        # as the yearly file is written.  So a re-run has rewritten part of a
+        # year that was already aggregated.
+        #
+        # Adding the new files to the yearly file would duplicate records, and
+        # deleting them would throw away new output.  Do neither: report the
+        # year and leave it alone.
         if [ -f "${histdir}/${prefix}.${year}.nc" ]; then
           nleft=$(find ${histdir} -maxdepth 1 -name "${prefix}.${year}-*.nc" 2>/dev/null | wc -l | tr -d ' ')
           echo "${sn}: ERROR ${prefix}.${year}.nc already exists but ${nleft} per-date file(s) for ${year} are also present - left alone" >&2
