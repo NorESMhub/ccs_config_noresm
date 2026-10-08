@@ -18,6 +18,10 @@
   <directives queue = "large">
     <directive> --partition=large</directive>
   </directives>
+  <directives queue = "cmip7">
+    <directive> --partition=large</directive>
+    <directive> --reservation=CMIP7_olivia</directive>
+  </directives>
   <!-- maximum walltime 2 hours -->
   <directives queue = "devel">
     <directive> --partition=small</directive>
@@ -27,6 +31,7 @@
     <queues>
       <queue walltimedef="00:59:00" walltimemax="144:00:00" nodemin="1" nodemax="1" default="true">small</queue>
       <queue walltimedef="00:59:00" walltimemax="144:00:00" nodemin="2" nodemax="1024" default="true">large</queue>
+      <queue walltimedef="00:59:00" walltimemax="144:00:00" nodemin="2" nodemax="1024" default="true">cmip7</queue>
       <queue walltimedef="00:59:00" walltimemax="01:59:00" nodemin="1" nodemax="1" >devel</queue>
     </queues>
 </batch_system>
