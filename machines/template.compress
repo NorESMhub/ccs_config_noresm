@@ -31,6 +31,7 @@ ntasks=16
 caseroot=$(./xmlquery --value CASEROOT)
 archivedata=$(./xmlquery --value DOUT_S_ROOT)
 casename=$(./xmlquery --value CASE)
+compress_level=$(./xmlquery --value DOUT_S_COMPRESS_LEVEL)
 
 # A missing archive directory is a real failure here, so exit 1.  This is the
 # last job in the workflow and nothing is queued behind it, so a non-zero exit
@@ -46,11 +47,8 @@ cd $archivedata
 RMLOGS=0
 
 # Deflation level passed to ncks -L when rewriting each history file as
-# netCDF-4.  1 is fastest and compresses least, 9 is slowest and compresses
-# most. For floating point model output the gain above about 4 is small while
-# the cost keeps rising, so 5 is a deliberate middle choice rather than a
-# default. Raising it makes this job noticeably longer for a few percent of space.
-complevel=5 # 1-9
+# netCDF-4.  1 is fastest and compresses least, 9 is slowest and compresses most.
+complevel=$compress_level
 
 lid="$(date +%y%m%d-%H%M%S)"
 

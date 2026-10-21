@@ -54,7 +54,10 @@
       <!-- concatenate per-date history files into one file per year, before
            the compress job converts what is left -->
       <dependency>case.st_archive</dependency>
-      <prereq>$DOUT_S</prereq>
+      <!-- Braces are required: variable references are filled in by plain text
+	   replacement, so an unbraced $DOUT_S would also match the first seven
+	   characters of $DOUT_S_AGGREGATE and corrupt it into True_AGGREGATE. -->
+      <prereq>${DOUT_S} and ${DOUT_S_AGGREGATE}</prereq>
       <runtime_parameters>
         <task_count>16</task_count>
         <tasks_per_node>16</tasks_per_node>
@@ -64,8 +67,13 @@
     <job name="case.compress">
       <template>template.compress</template>
       <hidden>false</hidden>
-      <dependency>case.aggregate</dependency>
-      <prereq>$DOUT_S</prereq>
+      <!-- Compressing does not require aggregating first: with
+           DOUT_S_AGGREGATE FALSE, case.aggregate is left out of the
+           workflow and this job follows case.st_archive
+           directly. Both are listed since a dependency is only
+           applied for a job that was submitted. -->
+      <dependency>case.st_archive case.aggregate</dependency>
+      <prereq>${DOUT_S} and ${DOUT_S_COMPRESS}</prereq>
       <runtime_parameters>
         <task_count>16</task_count>
         <tasks_per_node>16</tasks_per_node>
@@ -82,48 +90,6 @@
         <tasks_per_node>$CUPID_TASKS_PER_NODE</tasks_per_node>
         <mem_per_task>$CUPID_MEM_PER_TASK</mem_per_task>
         <walltime>0:40:00</walltime>
-      </runtime_parameters>
-    </job>
-  </workflow_jobs>
-
-  <workflow_jobs id="cmip7" prepend="default">
-    <job name="amon">
-      <template>template.amon</template>
-      <dependency>case.st_archive</dependency>
-      <prereq>True</prereq>
-      <runtime_parameters MACH="derecho">
-        <task_count>128</task_count>
-        <tasks_per_node>128</tasks_per_node>
-        <mem_per_task>10</mem_per_task>
-        <walltime>0:40:00</walltime>
-      </runtime_parameters>
-    </job>
-    <job name="lmon">
-      <template>template.Lmon</template>
-      <dependency>case.st_archive</dependency>
-      <prereq>True</prereq>
-      <runtime_parameters MACH="derecho">
-        <task_count>4</task_count>
-        <tasks_per_node>128</tasks_per_node>
-        <mem_per_task>10</mem_per_task>
-        <walltime>0:40:00</walltime>
-      </runtime_parameters>
-    </job>
-    
-  </workflow_jobs>
-      
-
-  
-  <!-- THIS CREATES THE JOB FOR THE LAUNCHING OF THE SMARTSIM ORCHESTRATOR -->
-  <workflow_jobs id="smartsim_db" prepend="default">
-    <job name="smartsim_db"> <!-- name here corresponds with scripts -->
-      <!-- The following should point to the launching script for the orchestrator -->
-      <template>/glade/work/ashao/dev/SmartSim/tutorials/cheyenne/cime_database.sh</template>
-      <prereq>1</prereq>
-      <runtime_parameters MACH="cheyenne">
-        <task_count>3</task_count> <!-- This will be the number of nodes to run the orchestrator on  -->
-	      <tasks_per_node>1</tasks_per_node>
-	      <walltime>0:20:00</walltime>
       </runtime_parameters>
     </job>
   </workflow_jobs>
