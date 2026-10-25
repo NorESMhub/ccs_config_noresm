@@ -61,7 +61,7 @@
       <runtime_parameters>
         <task_count>16</task_count>
         <tasks_per_node>16</tasks_per_node>
-        <walltime>1:00:00</walltime>
+        <walltime>0:50:00</walltime>
       </runtime_parameters>
     </job>
     <job name="case.compress">
@@ -77,7 +77,7 @@
       <runtime_parameters>
         <task_count>16</task_count>
         <tasks_per_node>16</tasks_per_node>
-        <walltime>0:20:00</walltime>
+        <walltime>0:50:00</walltime>
       </runtime_parameters>
     </job>
     <job name="case.cupid">
