@@ -19,7 +19,7 @@ echo "no proper NCO"
 exit
 fi
 
-ntasks=16
+ntasks="${SLURM_NTASKS}"
 
 # Set script name
 sn=compress
