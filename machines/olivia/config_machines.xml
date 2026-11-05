@@ -70,7 +70,7 @@
   </environment_variables>
   <environment_variables compiler="intel">
     <env name="CPRNC_PREF">/cluster/shared/noresm/tools/iimkl24a</env>
-    <env name="I_MPI_FABRICS">ofi</env>
+    <!--env name="I_MPI_FABRICS">ofi</env-->
   </environment_variables>
   <environment_variables compiler="gnu">
     <env name="CPRNC_PREF">/cluster/shared/noresm/tools/gnuopenmpi</env>
