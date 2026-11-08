@@ -17,10 +17,12 @@
   <!-- meant for larger CPU-only jobs, needing at least one node (> 256 CPUs) -->
   <directives queue = "large">
     <directive> --partition=large</directive>
+    <directive> --exclusive</directive>
   </directives>
   <directives queue = "cmip7">
     <directive> --partition=large</directive>
     <directive> --reservation=CMIP7_olivia</directive>
+    <directive> --exclusive</directive>
   </directives>
   <!-- maximum walltime 2 hours -->
   <directives queue = "devel">
