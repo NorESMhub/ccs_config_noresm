@@ -70,6 +70,7 @@
   </environment_variables>
   <environment_variables mpilib="oneapi">
     <env name="I_MPI_COLL_DIRECT">off</env>
+    <env name="LD_PRELOAD">/opt/cray/libfabric/1.22.0/lib64/libfabric.so</env>
   </environment_variables>
   <environment_variables compiler="intel">
     <env name="CPRNC_PREF">/cluster/shared/noresm/tools/iimkl24a</env>
