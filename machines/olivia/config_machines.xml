@@ -68,6 +68,10 @@
     <env name="OMPI_MCA_fs_lustre_stripe_width">8</env>
     <env name="OMPI_MCA_fs">^gpfs</env>
   </environment_variables>
+  <environment_variables mpilib="oneapi">
+    <env name="I_MPI_COLL_DIRECT">off</env>
+    <env name="LD_PRELOAD">/opt/cray/libfabric/1.22.0/lib64/libfabric.so</env>
+  </environment_variables>
   <environment_variables compiler="intel">
     <env name="CPRNC_PREF">/cluster/shared/noresm/tools/iimkl24a</env>
     <!--env name="I_MPI_FABRICS">ofi</env-->
