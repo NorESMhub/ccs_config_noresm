@@ -25,7 +25,7 @@ echo "${sn}: ERROR no NCO module known for machine '${machine}'" >&2
 exit 1
 fi
 
-ntasks=16
+ntasks="${SLURM_NTASKS}"
 
 # archive data
 caseroot=$(./xmlquery --value CASEROOT)
